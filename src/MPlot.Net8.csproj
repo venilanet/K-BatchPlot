@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AutoCAD 2025 / 2026 专用工程（.NET 8，实验通道）。
+
+  Autodesk 从 2025 起把托管 .NET API 迁到 .NET 8，并明确「破坏二进制兼容」，
+  所以 2015-2024 用的 net48 DLL 不能在 2025+ 里加载，必须单独编译。
+  一键安装器检测到 2025+ 且本机有 dotnet SDK 时会自动用这个工程编译，
+  生成的 DLL 同样叫 MPlot.dll，部署到同一个 .bundle。
+
+  手工编译：
+    dotnet build MPlot.Net8.csproj -c Release -p:AcadDir="C:\Program Files\Autodesk\AutoCAD 2025"
+
+  注意：2025 迁移指南改了少量 API 签名；本插件用的都是 Database / Editor /
+  PlotSettings / WinForms 这些基础 API，若编译报个别签名不符，按报错微调即可。
+  另外 AutoCAD 2025 安装目录里的 .NET DLL 必须是 .NET 8 版本。
+-->
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>MPlot</AssemblyName>
+    <RootNamespace>MPlot</RootNamespace>
+    <OutputType>Library</OutputType>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <DefineConstants>TRACE</DefineConstants>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AcadDir Condition=" '$(AcadDir)' == '' ">C:\Program Files\Autodesk\AutoCAD 2025</AcadDir>
+  </PropertyGroup>
+
+  <!-- 默认不编译 VS 工程的输出目录；SDK 会自动包含 src 下全部 .cs -->
+  <ItemGroup>
+    <Compile Remove="bin\**" />
+    <Compile Remove="obj\**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="accoremgd" Condition="Exists('$(AcadDir)\accoremgd.dll')">
+      <HintPath>$(AcadDir)\accoremgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="acdbmgd">
+      <HintPath>$(AcadDir)\acdbmgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="acmgd">
+      <HintPath>$(AcadDir)\acmgd.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

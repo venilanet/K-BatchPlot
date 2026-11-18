@@ -1,0 +1,17 @@
+# ---- 本机安装/构建日志（含作者本机绝对路径，不属于源码）----
+install.log
+
+# ---- 自检临时产物（PDF / exe 由 run.ps1 现场生成）----
+tools/selftest/_work/
+
+# ---- Python 缓存 ----
+__pycache__/
+*.pyc
+
+# ---- 发布压缩包（在仓库上级目录生成，这里只做兜底）----
+*.zip
+
+# ---- 编辑器 / 系统 ----
+Thumbs.db
+.DS_Store
+*.swp

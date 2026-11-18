@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AutoCAD / 天正自动加载包（ApplicationPlugins 机制，AutoCAD 2013 起支持）。
+  把整个 MPlot.bundle 文件夹放到：
+     C:\Program Files\Autodesk\ApplicationPlugins\   （所有用户，默认受信任，需管理员）
+  或 %APPDATA%\Autodesk\ApplicationPlugins\          （当前用户，未签名时可能弹安全警告）
+  重启 AutoCAD 即自动 NETLOAD，无需手工 APPLOAD。
+
+  ★ 普通用户请用根目录的「一键安装.bat」：它会自动编译 MPlot.dll、
+    自动按检测到的 AutoCAD 版本重写本文件（SeriesMin / SeriesMax）并部署。
+    下面这份是「手工部署 / 二次开发」用的静态参考模板。
+
+  R19.0 = AutoCAD 2013；本机实测环境是 AutoCAD 2014 R19.1，
+          所以静态模板的 SeriesMin 必须是 R19.0 或更低（写 R20.0 会让 2014 直接拒绝加载）。
+  R24.3 = AutoCAD 2024（最后一个 .NET Framework 4.x 版本）
+  R25.0 = AutoCAD 2025（.NET 8，破坏二进制兼容，需 MPlot.Net8.csproj 单独编译）
+
+  说明：ComponentEntry 不写任何 LoadReasons / LoadOnAutoCADStartup 属性，
+  因为官方默认行为就是 LoadOnAutoCADStartup = True（且 LoadOnAppearance = True，
+  CAD 运行中安装也能立即生效）；写一些版本不认的属性反而可能被忽略。
+-->
+<ApplicationPackage
+    SchemaVersion="1.0"
+    AppVersion="1.0.0"
+    ProductCode="{9F2B6C41-7A8D-4E35-B1C0-3D6E5A2F8B70}"
+    Name="K-批量打印"
+    Description="图框型批量打印到 PDF、图纸目录、PDF 合集"
+    Author="VentLane">
+
+  <CompanyDetails Name="VentLane" />
+
+  <Components Description="AutoCAD 2013 - 2024 / .NET Framework 4.x（本机已实测 2014 R19.1）">
+    <RuntimeRequirements SeriesMin="R19.0" SeriesMax="R24.3" />
+    <ComponentEntry
+        AppName="MPlot"
+        ModuleName="./Contents/MPlot.dll"
+        AppDescription="K-批量打印" />
+  </Components>
+
+</ApplicationPackage>

@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!--
+    MPlot 主工程。目标环境按本机真实安装校准：
+      AutoCAD 2014 简体中文 64 位  R19.1  D:\Program Files (x86)\Autodesk\AutoCAD 2014
+      天正电气 T20 V3.0            D:\软件\TElecT20V3  (sys19x64, CadVersion=R19.1\ACAD-D001:804)
+      acad.exe.config             <supportedRuntime version="v4.0"/>  → .NET Framework 4.0
+
+    兼容范围：AutoCAD 2013 - 2024（.NET Framework 4.x / CLR 4）。
+    源码刻意保持 C# 5 语法，所以系统自带的 csc.exe 就能编译，不必装 VS / SDK。
+
+    ★ 普通用户不用打开这个文件：直接双击 MPlot 根目录的「一键安装.bat」。
+      安装器会自动找 CAD、自动编译、自动部署，重启天正即出现菜单。
+
+    二次开发 / 手工排错的命令行等价写法：
+      msbuild MPlot.csproj /p:Configuration=Release /p:AcadDir="D:\Program Files (x86)\Autodesk\AutoCAD 2014"
+  -->
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <ProjectGuid>{7C1E9A2B-4D3F-4A6E-9B21-8F5C0D7E3A44}</ProjectGuid>
+    <OutputType>Library</OutputType>
+    <RootNamespace>MPlot</RootNamespace>
+    <AssemblyName>MPlot</AssemblyName>
+    <TargetFrameworkVersion>v4.0</TargetFrameworkVersion>
+    <LangVersion>5</LangVersion>
+    <FileAlignment>512</FileAlignment>
+    <Deterministic>true</Deterministic>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+
+    <!-- 唯一需要按本机改的一行；命令行 /p:AcadDir="..." 可覆盖。 -->
+    <AcadDir Condition=" '$(AcadDir)' == '' ">D:\Program Files (x86)\Autodesk\AutoCAD 2014</AcadDir>
+
+    <!-- 默认零第三方依赖：PDF 合并走内置通道，不需要 NuGet、不需要联网。
+         只有在 VS 里想要 PdfSharp 作为额外通道时，把 NoPdfSharp 改成 false。 -->
+    <DefineConstants>TRACE</DefineConstants>
+    <NoPdfSharp Condition=" '$(NoPdfSharp)' == '' ">true</NoPdfSharp>
+  </PropertyGroup>
+
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <OutputPath>bin\Debug\</OutputPath>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- AutoCAD 托管程序集：Private=False 是硬要求，绝对不能把它们复制进 .bundle，
+         否则 AutoCAD 会加载到第二份 acdbmgd 并直接崩溃。
+         accoremgd.dll 从 AutoCAD 2013 起就有（本机 2014 实测存在，
+         DocumentManager / SetSystemVariable / Idle / PlotEngine / PlotInfo 都在里面），
+         2015+ 更是必须引用。 -->
+    <Reference Include="accoremgd">
+      <HintPath>$(AcadDir)\accoremgd.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="acdbmgd">
+      <HintPath>$(AcadDir)\acdbmgd.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="acmgd">
+      <HintPath>$(AcadDir)\acmgd.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Xml" />
+    <!-- MenuBuilder 用 COM dynamic 后期绑定，dynamic 必须有 Microsoft.CSharp -->
+    <Reference Include="Microsoft.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="Properties\AssemblyInfo.cs" />
+    <Compile Include="MiniJson.cs" />
+    <Compile Include="Models.cs" />
+    <Compile Include="Logger.cs" />
+    <Compile Include="AcadUtil.cs" />
+    <Compile Include="AttrReader.cs" />
+    <Compile Include="PaperMatcher.cs" />
+    <Compile Include="FrameScanner.cs" />
+    <Compile Include="Naming.cs" />
+    <Compile Include="Plotter.cs" />
+    <Compile Include="BuiltInPdfMerge.cs" />
+    <Compile Include="PdfMerger.cs" />
+    <Compile Include="Catalog.cs" />
+    <Compile Include="BatchEngine.cs" />
+    <Compile Include="MenuBuilder.cs" />
+    <Compile Include="Commands.cs" />
+    <Compile Include="UI\Forms.cs" />
+    <Compile Include="UI\FrameLibraryForm.cs" />
+    <Compile Include="UI\FrameBatchForm.cs" />
+  </ItemGroup>
+
+  <ItemGroup Condition=" '$(NoPdfSharp)' != 'true' ">
+    <!-- 可选：PdfSharp 1.50（MIT，单个 dll）。默认关闭，一键安装完全不需要它。 -->
+    <PackageReference Include="PdfSharp" Version="1.50.5147" />
+  </ItemGroup>
+
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
