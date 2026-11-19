@@ -1309,6 +1309,70 @@ def check_round10():
     return checks, issues
 
 
+def check_round11():
+    """2026-11-19 第十一轮（真机反馈：图没布满、图框左边与下方线条被裁；用户约束：
+    图框外框一定标准、不外扩；留白可调、默认 2mm）的防回退规则。
+    修：自动模式下行级手动分母不再生效（导出与显示都按自动比例），手动分母只在
+    自定义比例模式下才有意义；自动模式下填分母不存、提示改模式；窗口不外扩
+    （marginUnits=0）；留白可调默认 2.0；旧注释「图框窗口外扩」已纠正。grep 级别。"""
+    checks, issues = [], []
+
+    def read(rel):
+        pp = os.path.join(ROOT, rel)
+        return open(pp, encoding="utf-8-sig").read() if os.path.isfile(pp) else ""
+
+    engine = read("src/BatchEngine.cs")
+    form = read("src/UI/FrameBatchForm.cs")
+    models = read("src/Models.cs")
+    forms = read("src/UI/Forms.cs")
+    scanner = read("src/FrameScanner.cs")
+
+    # 1. BuildRequest：自动模式下行级手动分母不生效
+    if "if (mode != ScaleMode.AutoFromFrame && s.Config != null && s.Config.ScaleDenominator > 0)" in engine:
+        checks.append("BuildRequest：自动模式下行级手动分母不生效（永远按当前纸张+图框重算）")
+    else:
+        issues.append("第十一轮回退：BuildRequest 里行级手动分母又能覆盖自动比例，图会打不满/被裁")
+    # 2. TryEffectiveScale：自动模式优先于行级手动分母（自动分支在前，手动是跟在其后的 else if）
+    m = re.search(r"private static bool TryEffectiveScale.*?\n        \}\n", engine, re.S)
+    auto_first = False
+    if m:
+        body = m.group(0)
+        ai = body.find("if (mode == ScaleMode.AutoFromFrame)")
+        mi = body.find("s.Config.ScaleDenominator > 0")
+        auto_first = (ai >= 0 and mi >= 0 and ai < mi
+                      and "else if (s.Config != null && s.Config.ScaleDenominator > 0)" in body)
+    if auto_first:
+        checks.append("TryEffectiveScale：自动模式优先，行级手动分母只在非自动模式下生效")
+    else:
+        issues.append("第十一轮回退：TryEffectiveScale 里行级手动分母又排在自动前面")
+    # 3. 显示与导出一致：HasManualDen 统一判断
+    if "private bool HasManualDen(SheetItem s)" in form and form.count("HasManualDen(s)") >= 3:
+        checks.append("显示与导出一致（HasManualDen 统一判断，自动模式下不显示 *）")
+    else:
+        issues.append("第十一轮回退：行级手动分母的生效判断不统一，显示会与导出脱节")
+    # 4. 自动模式下填分母不存、提示改模式
+    if "手动分母不会生效" in form and "ScaleMode.AutoFromFrame" in form:
+        checks.append("自动模式下填分母不存、提示改成自定义比例（不再锁死）")
+    else:
+        issues.append("第十一轮回退：自动模式下填分母又会被存成手动、锁死")
+    # 5. 图框外框标准、不外扩：窗口不外扩
+    if "double marginUnits = 0;" in scanner:
+        checks.append("图框外框标准、不外扩（窗口就是图框标准外框，marginUnits=0）")
+    else:
+        issues.append("第十一轮回退：窗口被外扩了，图框外框不再是标准的")
+    # 6. 留白可调、默认 2mm
+    if "WindowMarginMm = 2.0;" in models and "_margin = Ui.N(c.WindowMarginMm, 0, 100, 1);" in forms:
+        checks.append("留白可调、默认 2mm（设置里可改，不写死）")
+    else:
+        issues.append("第十一轮回退：留白被写死或不可调")
+    # 7. 旧注释「图框窗口外扩」已纠正
+    if "图框窗口外扩" not in models and "绝不外扩" in models:
+        checks.append("留白注释已纠正（只通过比例缩小留白，窗口绝不外扩）")
+    else:
+        issues.append("第十一轮回退：留白注释还写着「图框窗口外扩」，会误导后人去扩窗口")
+    return checks, issues
+
+
 def main():
     tree = ET.parse(CSPROJ)
     listed = sorted(e.attrib["Include"].replace("\\", "/") for e in tree.findall(".//m:Compile", NS))
@@ -1511,7 +1575,14 @@ def main():
     for i in r10_issues:
         print("  [X] " + i)
 
-    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues or r7_issues or r8_issues or r9_issues or r10_issues or st_issues)
+    print("\n--- 第十一轮防回退自检（自动模式真自动 / 图框不外扩 / 留白可调默认 2mm）---")
+    r11_checks, r11_issues = check_round11()
+    for c in r11_checks:
+        print("  " + c)
+    for i in r11_issues:
+        print("  [X] " + i)
+
+    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues or r7_issues or r8_issues or r9_issues or r10_issues or r11_issues or st_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
     print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")

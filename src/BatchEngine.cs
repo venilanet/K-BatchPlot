@@ -384,7 +384,14 @@ namespace MPlot
             try
             {
                 ScaleMode mode = cfg.ScaleMode;
-                if (s.Config != null && s.Config.ScaleDenominator > 0)
+                if (mode == ScaleMode.AutoFromFrame)
+                {
+                    // 第十一轮：自动模式下行级手动分母不生效（见 BuildRequest 同款注释），
+                    // 永远按当前纸张+图框重算，保证图框布满纸张。
+                    den = PaperMatcher.ComputeScaleDenominatorWithMargin(s.WidthMm, s.HeightMm,
+                              s.Config, s.Rotated, cfg.WindowMarginMm);
+                }
+                else if (s.Config != null && s.Config.ScaleDenominator > 0)
                 {
                     num = s.Config.ScaleNumerator > 0 ? s.Config.ScaleNumerator : 1;
                     den = s.Config.ScaleDenominator;
@@ -394,11 +401,6 @@ namespace MPlot
                 {
                     num = cfg.CustomScaleNumerator > 0 ? cfg.CustomScaleNumerator : 1;
                     den = cfg.CustomScaleDenominator > 0 ? cfg.CustomScaleDenominator : 1;
-                }
-                else if (mode == ScaleMode.AutoFromFrame)
-                {
-                    den = PaperMatcher.ComputeScaleDenominatorWithMargin(s.WidthMm, s.HeightMm,
-                              s.Config, s.Rotated, cfg.WindowMarginMm);
                 }
                 else
                 {
@@ -460,7 +462,14 @@ namespace MPlot
                           s.Config, s.Rotated, cfg.WindowMarginMm);
                 if (forceDen > 0) den = forceDen;
             }
-            if (s.Config != null && s.Config.ScaleDenominator > 0)
+            // 第十一轮（2026-11-19 真机反馈：图没布满、图框边线被裁）：
+            // 出图比例是「自动按图框反算」时，行级手动分母不再生效——自动就是真自动，
+            // 永远按当前纸张+图框重算。行级手动分母只在「自定义比例」模式下才有意义。
+            // 旧清单里被第九轮锁死功能锁住的分母（带 * 的行）是脏数据，改纸张也不会跟，
+            // 必须由自动比例覆盖，否则 A0 改 A3 仍按 1:100 打、图框打不满或只出局部。
+            // 图框外框本身绝不外扩（用户要求）：窗口就是图框标准外框（marginUnits=0），
+            // 2mm 留白只由比例缩小实现，不动窗口。
+            if (mode != ScaleMode.AutoFromFrame && s.Config != null && s.Config.ScaleDenominator > 0)
             {
                 num = s.Config.ScaleNumerator > 0 ? s.Config.ScaleNumerator : 1;
                 den = s.Config.ScaleDenominator;

@@ -526,7 +526,7 @@ namespace MPlot
         public bool PlotCentered { get; set; }
         public double PlotOffsetX { get; set; }           // mm，打印原点偏移
         public double PlotOffsetY { get; set; }
-        public double WindowMarginMm { get; set; }        // 图框窗口外扩，防止边框线被裁掉
+        public double WindowMarginMm { get; set; }        // 四边留白（mm）：可调，默认 2.0；只通过比例缩小留白，图框外框（窗口）本身绝不外扩，保持标准
         public ScaleMode ScaleMode { get; set; }
         public double CustomScaleNumerator { get; set; }
         public double CustomScaleDenominator { get; set; }

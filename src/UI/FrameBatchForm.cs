@@ -57,7 +57,7 @@ namespace MPlot
             ClientSize = new Size(1120, 700);
             MinimumSize = new Size(900, 560);
 
-            _hint = Ui.L("纸张列点下拉可单张改（A0/A1/A2/A3/A4/自定义）；比例列显示导出时真正用的比例（自动=实测÷纸张，改纸张即变并清回自动；双击可填分母锁定，清空=自动，顶部比例填 0 也可一键清回自动；1:200 以上标橙色，打印后文字可能偏小）；点每行的「预览」可看这张的打印效果（滚轮放大、拖动平移、双击切适合窗口/实际大小）；重复图号、重复文件名、空文件名会标红。\r\n「定位选中图纸」直接回图上看选中图框（可平移/缩放，按回车返回清单）；「点选图框」可在图上连续点选图框块追加进清单（回车结束，Esc 取消）；点「确认导出 PDF」前会自动检查文件名、图框、纸张与输出目录。", 900);
+            _hint = Ui.L("纸张列点下拉可单张改（A0/A1/A2/A3/A4/自定义）；比例列显示导出时真正用的比例（自动模式下永远=实测÷纸张，改纸张即变，手动分母不生效；要锁定比例请先在打印设置里改成「自定义比例」，再双击填分母，清空=自动，顶部比例填 0 可一键清回自动；1:200 以上标橙色，打印后文字可能偏小）；点每行的「预览」可看这张的打印效果（滚轮放大、拖动平移、双击切适合窗口/实际大小）；重复图号、重复文件名、空文件名会标红。\r\n「定位选中图纸」直接回图上看选中图框（可平移/缩放，按回车返回清单）；「点选图框」可在图上连续点选图框块追加进清单（回车结束，Esc 取消）；点「确认导出 PDF」前会自动检查文件名、图框、纸张与输出目录。", 900);
 
             _filter = Ui.D(new[] { "全部图纸", "重复图号", "重复文件名", "文件名为空", "异常图纸"}, 130, 0);
             _filter.SelectedIndexChanged += delegate { ApplyFilter();};
@@ -213,11 +213,20 @@ namespace MPlot
             return s.Config.Paper.Preset;
         }
 
-        /// <summary>标称有效比例分母（不含留白）：手动分母优先，其次全局自定义，再按实测÷纸张算；
-        /// ScaleToFit/OneToOne 不用数字比例，返回 0。</summary>
+        /// <summary>行级手动分母是否生效：只有「自定义比例」模式下才生效；
+        /// 自动模式下行级手动分母一律不生效（第十一轮），显示与导出都按自动比例，
+        /// 否则格子里写 1:100*、实际打出的是自动比例，会误导人。</summary>
+        private bool HasManualDen(SheetItem s)
+        {
+            if (s.Config == null || s.Config.ScaleDenominator <= 0) return false;
+            return _cfg == null || _cfg.ScaleMode != ScaleMode.AutoFromFrame;
+        }
+
+        /// <summary>标称有效比例分母（不含留白）：手动分母优先（仅自定义比例模式），
+        /// 其次全局自定义，再按实测÷纸张算；ScaleToFit/OneToOne 不用数字比例，返回 0。</summary>
         private double EffectiveDen(SheetItem s)
         {
-            if (s.Config != null && s.Config.ScaleDenominator > 0)
+            if (HasManualDen(s))
                 return s.Config.ScaleDenominator;
             return EffectiveDenAuto(s);
         }
@@ -244,7 +253,7 @@ namespace MPlot
         /// 差不到 1%，不影响看字大小的判断；预览图是带留白的真实导出效果。</summary>
         private string ScaleText(SheetItem s)
         {
-            if (s.Config != null && s.Config.ScaleDenominator > 0)
+            if (HasManualDen(s))
                 return "1:" + s.Config.ScaleDenominator.ToString("0.####", CultureInfo.InvariantCulture) + "*";
             double den = EffectiveDen(s);
             if (den <= 0)
@@ -260,7 +269,7 @@ namespace MPlot
         /// <summary>比例格悬停说明：自动还是手动，超 1:200 提醒字可能偏小。</summary>
         private string ScaleTip(SheetItem s)
         {
-            if (s.Config != null && s.Config.ScaleDenominator > 0)
+            if (HasManualDen(s))
                 return "手动比例 1:" + s.Config.ScaleDenominator.ToString("0.####", CultureInfo.InvariantCulture) + "，不随纸张变化（双击清空=自动）";
             double den = EffectiveDen(s);
             if (den <= 0) return "";
@@ -477,6 +486,12 @@ namespace MPlot
                     // 填的值就是自动值，恢复自动，不锁死
                     if (s.Config != null) { s.Config.ScaleNumerator = 0; s.Config.ScaleDenominator = 0; }
                 }
+                else if (_cfg != null && _cfg.ScaleMode == ScaleMode.AutoFromFrame)
+                {
+                    // 第十一轮：自动模式下手动分母不生效，填了也不存，避免又锁死。
+                    // 要锁定比例，先在打印设置里把出图比例改成「自定义比例」。
+                    Ui.Warn("当前是「自动按图框反算比例」模式，手动分母不会生效；要锁定比例，请先在打印设置里把出图比例改成「自定义比例」。");
+                }
                 else
                 {
                     if (s.Config == null) s.Config = new FrameEntry();
@@ -620,6 +635,13 @@ namespace MPlot
             double den;
             if (!double.TryParse(_den.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out den) || den < 0)
             { Ui.Warn("比例分母请填大于等于 0 的数字，例如 100；填 0 = 清回自动"); return;}
+            // 第十一轮：自动模式下填正数分母不生效（行级手动分母不存），提示改模式；
+            // 填 0 本来就是清回自动，照常执行（正好清掉旧清单里被锁死的行）。
+            if (den > 0 && _cfg != null && _cfg.ScaleMode == ScaleMode.AutoFromFrame)
+            {
+                Ui.Warn("当前是「自动按图框反算比例」模式，手动分母不会生效；要锁定比例，请先在打印设置里把出图比例改成「自定义比例」。");
+                return;
+            }
             foreach (int i in idx)
             {
                 if (_items[i].Config == null) _items[i].Config = new FrameEntry();
