@@ -794,6 +794,119 @@ def check_installer():
     return checks, issues
 
 
+def check_round5():
+    """2026-11-19 第五轮（真机反馈：纸张 100 倍 / 批量纸张不联动文件名 / 图号 J /
+    空白页 / 卡顿 / 卸载菜单复活）的防回退规则。grep 级别，与 check_installer() 同风格。"""
+    checks, issues = [], []
+
+    def read(rel):
+        p = os.path.join(ROOT, rel)
+        return open(p, encoding="utf-8-sig").read() if os.path.isfile(p) else ""
+
+    models = read("src/Models.cs")
+    scanner = read("src/FrameScanner.cs")
+    picker = read("src/BlockPicker.cs")
+    reader = read("src/AttrReader.cs")
+    acad = read("src/AcadUtil.cs")
+    batch = read("src/BatchEngine.cs")
+    cmds = read("src/Commands.cs")
+    menu = read("src/MenuBuilder.cs")
+    uninst = read("src/Uninstaller.cs")
+    form = read("src/UI/FrameBatchForm.cs")
+
+    # 纸张：按插入比例还原（GuessScaled + InsertionScale），猜不到保留库纸张。
+    if "GuessScaled" in models and "ScaleDivisors" in models and "150" in models:
+        checks.append("纸张按插入比例还原：GuessScaled 含比例吸附阶梯（含 1:150）")
+    else:
+        issues.append("纸张回退：Models.cs 缺 GuessScaled / ScaleDivisors / 1:150 吸附")
+    if "InsertionScale" in acad and "ScaleFactors" in acad:
+        checks.append("插入比例取自 BlockReference.ScaleFactors（取不到/非法时回 1）")
+    else:
+        issues.append("纸张回退：AcadUtil 缺 InsertionScale / ScaleFactors")
+    if "GuessScaled" in scanner and "InsertionScale" in scanner and "!g.IsCustom" in scanner:
+        checks.append("Scan 按还原尺寸识别纸张，猜不到标准幅面时保留库纸张")
+    else:
+        issues.append("纸张回退：Scan 未走 GuessScaled，或猜不到时仍会拿自定义覆盖库纸张")
+    if "GuessScaled" in picker and "InsertionScale" in picker and "!g.IsCustom" in picker:
+        checks.append("BlockPicker 与 Scan 用同一套按比例还原的纸张识别")
+    else:
+        issues.append("纸张回退：BlockPicker 未走 GuessScaled / 仍会拿自定义覆盖库纸张")
+
+    # 批量设纸张：必须同步重算文件名；选自定义保留本行实测尺寸。
+    m = re.search(r"private void ApplyPaperToSelected\(\)(.*?)\n        private void ",
+                  form, re.S)
+    body = m.group(1) if m else ""
+    if "BuildFileName" in body:
+        checks.append("批量设置纸张后同步重算文件名（纸张列与文件名一起变）")
+    else:
+        issues.append("批量纸张回退：ApplyPaperToSelected 未重算 FileStem，文件名会留旧的 _自定义")
+    if 'pt == "自定义"' in body and "_items[i].WidthMm" in body:
+        checks.append("批量设纸张选「自定义」时保留本行实测尺寸，不重置成 841×594")
+    else:
+        issues.append("批量纸张回退：ApplyPaperToSelected 选自定义时未保留本行实测尺寸")
+
+    # 图号 J：单字守卫 + 同行碎片拼接。
+    if reader.count("v.Trim().Length < 2") >= 2:
+        checks.append("图号/图名打分器拒绝单字（J 这类碎片打 0 分）")
+    else:
+        issues.append("图号回退：AttrReader 打分器未加单字守卫")
+    if "MergeDrawNoLine" in reader and "tol, true" in scanner:
+        checks.append("图号同行碎片拼接：区域读值与锚点读值都拼（J + 01 → J-01）")
+    else:
+        issues.append("图号回退：缺 MergeDrawNoLine，或图号锚点未开碎片拼接")
+    if scanner.count("v.Trim().Length < 2") >= 4:
+        checks.append("Scan 锚点/区域读值遇单字即清空，不覆盖已读值、不堵住区域回退")
+    else:
+        issues.append("图号回退：Scan 锚点/区域分支未加单字清空")
+
+    # 空白页：导出瞬间按当前视图重算 DCS 打印窗口。
+    if "WcsRectToDcs(s.WindowWcs)" in batch:
+        checks.append("BuildRequest 导出时按当前视图重算 DCS 窗口（旧 DCS 在定位/预览改视图后会过期致白纸）")
+    else:
+        issues.append("空白页回退：BuildRequest 仍用扫描时存的旧 WindowDcs")
+
+    # 卡顿：全图文字缓存、定义包围盒缓存、矩形兜底跳过、框选预过滤、扫描进度提示。
+    if "BeginTextCache" in reader and "EndTextCache" in reader and "ScanTextsCore" in reader:
+        checks.append("全图文字缓存：Scan 武装、第一次读值时建缓存、之后只筛缓存")
+    else:
+        issues.append("卡顿回退：AttrReader 缺文字缓存（Begin/EndTextCache/ScanTextsCore）")
+    if "BeginTextCache" in scanner:
+        checks.append("Scan 武装文字缓存")
+    else:
+        issues.append("卡顿回退：Scan 未武装文字缓存")
+    if "defCache" in acad and "FrameExtents(br, tr, defCache)" in scanner and "FrameExtents(br, tr, defCache)" in picker:
+        checks.append("定义包围盒缓存：同一图框定义同批只算一次（Scan + 点选都用）")
+    else:
+        issues.append("卡顿回退：FrameExtents 未按块定义缓存，同一图框每张都重算定义")
+    if "if (cfg.RectFrameFallback && res.Sheets.Count == 0)" in scanner:
+        checks.append("矩形兜底只在没有块图框时才跑（有块图时不全图扫多段线）")
+    else:
+        issues.append("卡顿回退：矩形兜底未跳过，块图存在时仍全图扫矩形")
+    if "InAnyRegion" in scanner and "Scan(db, lib, cfg, regions)" in scanner:
+        checks.append("框选预过滤：框外图框在算包围盒、读文字之前就跳过")
+    else:
+        issues.append("卡顿回退：Scan 未做框选预过滤（仍全图扫完再筛）")
+    if "正在扫描图框" in cmds:
+        checks.append("MP_FRAME 扫描前后命令行报进度与用时")
+    else:
+        issues.append("卡顿回退：MP_FRAME 扫描无进度提示")
+
+    # 卸载菜单复活：已卸载标志屏蔽 Idle/切图/MP_MENU 重建。
+    if "MarkUninstalled" in menu and "if (_uninstalled) return false" in menu:
+        checks.append("MenuBuilder 有已卸载标志，EnsureMenu 在已卸载时拒绝重建")
+    else:
+        issues.append("卸载回退：MenuBuilder 缺已卸载标志，Idle 事件会把菜单建回来")
+    if cmds.count("!MenuBuilder.Uninstalled") >= 2:
+        checks.append("Idle 与切图事件重建菜单前都查已卸载标志")
+    else:
+        issues.append("卸载回退：Idle/切图重建菜单未查已卸载标志")
+    if "MarkUninstalled" in uninst:
+        checks.append("一键卸载先立已卸载标志再删菜单")
+    else:
+        issues.append("卸载回退：Uninstaller 未立已卸载标志")
+    return checks, issues
+
+
 def main():
     tree = ET.parse(CSPROJ)
     listed = sorted(e.attrib["Include"].replace("\\", "/") for e in tree.findall(".//m:Compile", NS))
@@ -947,7 +1060,14 @@ def main():
     for i in inst_issues:
         print("  [X] " + i)
 
-    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues)
+    print("\n--- 第五轮防回退自检（纸张比例 / 批量纸张 / 图号 J / 空白页 / 卡顿 / 卸载复活）---")
+    r5_checks, r5_issues = check_round5()
+    for c in r5_checks:
+        print("  " + c)
+    for i in r5_issues:
+        print("  [X] " + i)
+
+    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
     print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")

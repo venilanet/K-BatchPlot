@@ -36,9 +36,23 @@ namespace MPlot
 
         public static bool IsMenuCreated { get { return _ok; } }
 
+        /// <summary>本会话已一键卸载：Idle/切图/MP_MENU 都不再重建菜单。
+        /// 只屏蔽本次 CAD 会话；下次启动 CAD 时是新进程，标志归零（若 .bundle 还在则正常加载）。</summary>
+        private static bool _uninstalled;
+
+        public static bool Uninstalled { get { return _uninstalled; } }
+
+        /// <summary>一键卸载时调用：记下本会话已卸载，并把菜单已创建标志清掉。</summary>
+        public static void MarkUninstalled()
+        {
+            _uninstalled = true;
+            _ok = false;
+        }
+
         public static bool EnsureMenu()
         {
             if (_ok) return true;
+            if (_uninstalled) return false;   // 已卸载：绝不自动重建（否则删完点确定又弹回来）
             try
             {
                 AcadUtil.EnsureMenuBarVisible();

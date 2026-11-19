@@ -55,6 +55,8 @@ namespace MPlot
             int skippedDup = 0, skippedNonBlock = 0, noMeta = 0, abnormal = 0;
             int seq = startSeq;
             HashSet<ObjectId> seenInPick = new HashSet<ObjectId>();
+            // 同批点选内按块定义缓存局部包围盒：同一图框点 10 次只算 1 次定义
+            Dictionary<ObjectId, Extents3d> defCache = new Dictionary<ObjectId, Extents3d>();
 
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
@@ -79,7 +81,7 @@ namespace MPlot
                         fc.Paper = null;
                     }
 
-                    Extents3d? ex = AcadUtil.FrameExtents(br, tr);
+                    Extents3d? ex = AcadUtil.FrameExtents(br, tr, defCache);
                     bool boundaryAbnormal = false;
                     Extents2d wcs;
                     double wMm = 0, hMm = 0;
@@ -113,11 +115,16 @@ namespace MPlot
 
                     bool paperAuto = false;
                     // 只有实测尺寸有效时才按尺寸定纸张；取不到框的行保持原纸张（临时条目为空），
-                    // 不拿 0×0 去猜一张假纸张。
-                    if (wMm > 0 && hMm > 0 && !FrameScanner.PaperMatches(fc.Paper, wMm, hMm))
+                    // 不拿 0×0 去猜一张假纸张。同一图框以 1:100、1:150 插入时先除以插入比例还原，
+                    // 再识别（与 Scan 同一逻辑）；猜不到标准幅面时保留库纸张，绝不拿自定义覆盖。
+                    Scale3d sc = AcadUtil.InsertionScale(br);
+                    double cw = wMm / sc.X, ch = hMm / sc.Y;
+                    if (wMm > 0 && hMm > 0
+                        && (fc.Paper == null || !FrameScanner.PaperMatches(fc.Paper, cw, ch) || fc.Paper.IsCustom))
                     {
-                        fc.Paper = PaperPresets.Guess(wMm, hMm);
-                        paperAuto = true;
+                        PaperSpec g = PaperPresets.GuessScaled(wMm, hMm, sc.X, sc.Y,
+                            fc.Paper == null ? "" : fc.Paper.Preset);
+                        if (g != null && !g.IsCustom) { fc.Paper = g; paperAuto = true; }
                     }
                     bool rotated = FrameScanner.NeedsRotation(wMm, hMm, fc.Paper, cfg.RotateToBestFit);
 
@@ -151,7 +158,7 @@ namespace MPlot
                         DrawNo = meta.DrawNo ?? "",
                         Title = meta.Title ?? "",
                         Rev = meta.Rev ?? "",
-                        MetaSource = BuildMetaSource(meta, paperAuto, wMm, hMm, boundaryAbnormal),
+                        MetaSource = BuildMetaSource(meta, paperAuto, cw, ch, sc, boundaryAbnormal),
                         PaperAutoDetected = paperAuto,
                         PosAutoDetected = meta.DrawNoPos.HasValue || meta.TitlePos.HasValue,
                         Center = new Point3d(
@@ -206,16 +213,17 @@ namespace MPlot
             catch { return false; }
         }
 
-        /// <summary>点选行的备注：来源「点选」+ 图号来源 + 纸张自动/实测 + 位置自动 + 待补充/边界异常。</summary>
-        private static string BuildMetaSource(SheetMeta meta, bool paperAuto, double wMm, double hMm, bool boundaryAbnormal)
+        /// <summary>点选行的备注：来源「点选」+ 图号来源 + 纸张自动/实测 + 位置自动 + 待补充/边界异常。
+        /// 实测尺寸显示「插入比例还原后」的尺寸（与纸张识别同一依据），比例不是 1 时后缀 @1:100。</summary>
+        private static string BuildMetaSource(SheetMeta meta, bool paperAuto, double cw, double ch, Scale3d sc, bool boundaryAbnormal)
         {
             string src = "点选";
             if (!string.IsNullOrEmpty(meta.Source)) src += "·" + meta.Source;
             if (!string.IsNullOrEmpty(meta.DrawNo) && !string.IsNullOrEmpty(meta.DrawNoFrom))
                 src += "；图号←" + meta.DrawNoFrom;
             if (paperAuto)
-                src += "；纸张自动；实测" + ((int)Math.Round(wMm)).ToString()
-                     + "×" + ((int)Math.Round(hMm)).ToString() + "mm";
+                src += "；纸张自动；实测" + ((int)Math.Round(cw)).ToString()
+                     + "×" + ((int)Math.Round(ch)).ToString() + "mm" + FrameScanner.ScaleNote(sc);
             if (meta.DrawNoPos.HasValue || meta.TitlePos.HasValue)
                 src += "；位置自动";
             if (string.IsNullOrEmpty(meta.DrawNo) && string.IsNullOrEmpty(meta.Title))

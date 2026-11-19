@@ -402,12 +402,26 @@ namespace MPlot
         {
             List<int> idx = TargetIndices();
             if (idx.Count == 0) { Ui.Warn("清单为空"); return;}
-            PaperSpec ps = PaperPresets.Get(_paper.Text);
+            string pt = (_paper.Text ?? "").Trim();
+            PaperSpec ps = PaperPresets.Get(pt);
             if (ps == null) return;
             foreach (int i in idx)
             {
                 if (_items[i].Config == null) _items[i].Config = new FrameEntry();
-                _items[i].Config.Paper = ps;
+                // 选「自定义」时保留本行实测尺寸，不要重置成 841×594
+                if (pt == "自定义")
+                    _items[i].Config.Paper = new PaperSpec
+                    {
+                        Preset = "自定义",
+                        WidthMm = _items[i].WidthMm,
+                        HeightMm = _items[i].HeightMm,
+                        IsCustom = true
+                    };
+                else
+                    _items[i].Config.Paper = ps;
+                // 文件名里的「图框大小」取自纸张：改纸张必须同步重算文件名，
+                // 否则纸张列变了、文件名还留着旧的 _自定义（2026-11-19 真机反馈）。
+                _items[i].FileStem = Naming.BuildFileName(_items[i], _cfg, i + 1);
             }
             RefreshGrid();
         }

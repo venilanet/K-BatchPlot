@@ -455,13 +455,27 @@ namespace MPlot
             }
             if (preserveLayout) mode = ScaleMode.OneToOne;
 
+            // 打印窗口在导出瞬间按当前视图重算 DCS：DCS 依赖当前视图，扫描时存的 DCS 在用户
+            // 用「定位选中图纸」缩放查看、或预览改动视图后就过期了，拿旧值打印会打到空地方（白纸）。
+            // WindowWcs 是模型坐标、与视图无关，是唯一可信的源；单张打印（PlotSingle）
+            // 只给了 DCS 窗口且是刚框选的，仍用原值。
+            Extents2d? windowDcs = null;
+            if (!preserveLayout && !s.IsGeneralLayout)
+            {
+                if (s.WindowWcs.MaxPoint.X > s.WindowWcs.MinPoint.X
+                    && s.WindowWcs.MaxPoint.Y > s.WindowWcs.MinPoint.Y)
+                    windowDcs = AcadUtil.WcsRectToDcs(s.WindowWcs);
+                else if (s.WindowDcs.HasValue)
+                    windowDcs = s.WindowDcs;
+            }
+
             return new PlotRequest
             {
                 Device = device,
                 MediaName = media == null ? "" : media.CanonicalName,
                 OutputStem = stem,
                 LayoutId = s.LayoutId,
-                WindowDcs = preserveLayout ? (Extents2d?)null : (s.IsGeneralLayout ? (Extents2d?)null : s.WindowDcs),
+                WindowDcs = windowDcs,
                 ScaleMode = mode,
                 ScaleNumerator = num,
                 ScaleDenominator = den,

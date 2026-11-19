@@ -98,8 +98,19 @@ namespace MPlot
 
         public static ScanResult Scan(Database db, FrameLibrary lib, GlobalConfig cfg)
         {
+            return Scan(db, lib, cfg, null);
+        }
+
+        /// <summary>regions：用户框选的范围（MP_FRAME 框选定范围）；只扫框内图框，
+        /// 框外在算包围盒、读文字之前就跳过。null/空 = 全图扫描。</summary>
+        public static ScanResult Scan(Database db, FrameLibrary lib, GlobalConfig cfg, List<Extents2d> regions)
+        {
             ScanResult res = new ScanResult();
             if (db == null || lib == null) return res;
+            // 武装全图文字缓存：本次扫描内标题栏/锚点/区域读值共用一次全图遍历；
+            // 扫描结束时解除（平时点取走实时遍历，不留过期缓存）。Begin 只武装不建缓存，
+            // 第一次读值时才建，所以属性就能读完的扫描一分钱不花。
+            AttrReader.BeginTextCache(db);
 
             double mmPerUnit = AcadUtil.MmPerUnit(db);
             // 留白改为「纸张不放大、内容按比例缩小」实现，打印窗口就用图框原尺寸，不再外扩。
@@ -110,6 +121,8 @@ namespace MPlot
             // 同批扫描内学到的图名/图号锚点（按块名），只在当次扫描内复用
             Dictionary<string, LearnedAnchor> learnedAnchors =
                 new Dictionary<string, LearnedAnchor>(StringComparer.OrdinalIgnoreCase);
+            // 同批扫描内按块定义缓存局部包围盒：同一图框插 10 次只算 1 次定义
+            Dictionary<ObjectId, Extents3d> defCache = new Dictionary<ObjectId, Extents3d>();
 
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
@@ -155,7 +168,22 @@ namespace MPlot
                         // 外部参照里的图框默认不收
                         if (!cfg.ScanXrefFrames && IsFromXref(br, tr)) continue;
 
-                        Extents3d? ex = AcadUtil.FrameExtents(br, tr);
+                        // 框选预过滤：框外的图框直接跳过，不算包围盒、不读文字
+                        // （以前是全图扫完再筛，框选不省时间；大图上这是卡顿主因之一）。
+                        if (regions != null && regions.Count > 0)
+                        {
+                            Extents3d? rough = AcadUtil.TryExtents(br);
+                            if (rough.HasValue)
+                            {
+                                Point3d rc = new Point3d(
+                                    (rough.Value.MinPoint.X + rough.Value.MaxPoint.X) / 2,
+                                    (rough.Value.MinPoint.Y + rough.Value.MaxPoint.Y) / 2, 0);
+                                if (!InAnyRegion(rc, regions)) continue;
+                            }
+                            // 粗范围取不到时不跳过，交给后面的精确过滤
+                        }
+
+                        Extents3d? ex = AcadUtil.FrameExtents(br, tr, defCache);
                         if (!ex.HasValue)
                         {
                             res.Warnings.Add("图框「" + name + "」无法取得包围盒，已跳过（可能是天正代理对象）");
@@ -170,14 +198,20 @@ namespace MPlot
                         double wMm = (x1 - x0) * mmPerUnit;
                         double hMm = (y1 - y0) * mmPerUnit;
 
-                        // 每张图单独一份配置：纸张按实测尺寸自动识别，锚点按本批学习结果补齐。
-                        // 库内原条目不动；同一块名不同可见性尺寸不同时，各张按各自实测尺寸出纸。
+                        // 每张图单独一份配置：纸张按「插入比例还原后的尺寸」自动识别，锚点按本批学习结果补齐。
+                        // 库内原条目不动；同一块名不同可见性/不同比例时，各张按各自还原尺寸出纸。
+                        // 同一图框以 1:100、1:150 插入时实测尺寸是纸张 × 比例，必须先除以插入比例还原，
+                        // 否则 A1 会被认成 84100mm 的自定义纸（2026-11-19 真机回归）。
                         FrameEntry fc = f.Clone();
                         bool paperAuto = false;
-                        if (!PaperMatches(fc.Paper, wMm, hMm))
+                        Scale3d sc = AcadUtil.InsertionScale(br);
+                        double cw = wMm / sc.X, ch = hMm / sc.Y;
+                        if (fc.Paper == null || !PaperMatches(fc.Paper, cw, ch) || fc.Paper.IsCustom)
                         {
-                            fc.Paper = PaperPresets.Guess(wMm, hMm);
-                            paperAuto = true;
+                            PaperSpec g = PaperPresets.GuessScaled(wMm, hMm, sc.X, sc.Y,
+                                fc.Paper == null ? "" : fc.Paper.Preset);
+                            if (g != null && !g.IsCustom) { fc.Paper = g; paperAuto = true; }
+                            // 猜不到标准幅面时保留库纸张，绝不拿「自定义 84100mm」覆盖它。
                         }
                         bool dnAnchorManual = f.HasDnAnchor, ttAnchorManual = f.HasTtAnchor;
                         LearnedAnchor learned;
@@ -209,7 +243,10 @@ namespace MPlot
                                                    Math.Abs(fc.DnY1 - fc.DnY0) * fh) * 1.5 + 50
                                         : Math.Max(fw, fh) * 0.03;
                                     v = AttrReader.ReadAtNearest(x0 + fc.DnAnchorX * fw,
-                                                                 y0 + fc.DnAnchorY * fh, tol);
+                                                                 y0 + fc.DnAnchorY * fh, tol, true);
+                                    // 单字不可能是真图号（属性路径已有同样规则）："J" 这类碎片不覆盖已读值，
+                                    // 且要把 v 清空，让后面的区域读值还有机会跑，而不是被碎片堵住。
+                                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
                                     fromAnchor = !string.IsNullOrEmpty(v);
                                 }
                                 if (string.IsNullOrEmpty(v) && fc.HasDrawNoRegion)
@@ -217,6 +254,7 @@ namespace MPlot
                                     Extents2d r = new Extents2d(x0 + fc.DnX0 * fw, y0 + fc.DnY0 * fh,
                                                                 x0 + fc.DnX1 * fw, y0 + fc.DnY1 * fh);
                                     v = AttrReader.ReadRegionValue(r, "drawno");
+                                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
                                 }
                                 if (!string.IsNullOrEmpty(v))
                                 {
@@ -247,6 +285,8 @@ namespace MPlot
                                         : Math.Max(fw, fh) * 0.03;
                                     v = AttrReader.ReadAtNearest(x0 + fc.TtAnchorX * fw,
                                                                  y0 + fc.TtAnchorY * fh, tol);
+                                    // 单字不可能是真图名：同图号，碎片不覆盖、且清空后让区域回退能跑。
+                                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
                                     fromAnchor = !string.IsNullOrEmpty(v);
                                 }
                                 if (string.IsNullOrEmpty(v) && fc.HasTitleRegion)
@@ -254,6 +294,7 @@ namespace MPlot
                                     Extents2d r = new Extents2d(x0 + fc.TtX0 * fw, y0 + fc.TtY0 * fh,
                                                                 x0 + fc.TtX1 * fw, y0 + fc.TtY1 * fh);
                                     v = AttrReader.ReadRegionValue(r, "title");
+                                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
                                 }
                                 if (!string.IsNullOrEmpty(v))
                                 {
@@ -313,7 +354,7 @@ namespace MPlot
                             MetaSource = (meta.Source ?? "")
                                 + (!string.IsNullOrEmpty(meta.DrawNo) && !string.IsNullOrEmpty(meta.DrawNoFrom) ? "；图号←" + meta.DrawNoFrom : "")
                                 + (paperAuto ? "；纸张自动" : "")
-                                + (paperAuto ? "；实测" + ((int)Math.Round(wMm)).ToString() + "×" + ((int)Math.Round(hMm)).ToString() + "mm" : "")
+                                + (paperAuto ? "；纸张自动；实测" + ((int)Math.Round(cw)).ToString() + "×" + ((int)Math.Round(ch)).ToString() + "mm" + ScaleNote(sc) : "")
                                 + ((meta.DrawNoPos.HasValue || meta.TitlePos.HasValue) ? "；位置自动" : ""),
                             PaperAutoDetected = paperAuto,
                             PosAutoDetected = meta.DrawNoPos.HasValue || meta.TitlePos.HasValue,
@@ -326,7 +367,9 @@ namespace MPlot
             }
 
             // ---- 图框不是块时：闭合矩形兜底 ----
-            if (cfg.RectFrameFallback)
+            // 找到块图框时不再全图扫矩形：老图兜底只在没有块图框时才跑；大图上全量
+            // 多段线扫描 + 逐个标题栏读值是卡顿来源之一，块图存在时矩形基本是图纸内容而非图框。
+            if (cfg.RectFrameFallback && res.Sheets.Count == 0)
             {
                 int before = res.Sheets.Count;
                 List<SheetItem> rects = ScanRectangleFrames(db, lib, cfg, mmPerUnit, marginUnits, ref seq);
@@ -350,17 +393,43 @@ namespace MPlot
             }
 
             res.UnmatchedBlockNames = unmatched.OrderBy(x => x).ToList();
+            AttrReader.EndTextCache();
             return res;
         }
 
+        /// <summary>点是否落在任一框选区域内（框选预过滤用）。</summary>
+        private static bool InAnyRegion(Point3d p, List<Extents2d> regions)
+        {
+            if (regions == null) return true;
+            foreach (Extents2d r in regions)
+            {
+                if (p.X >= r.MinPoint.X && p.X <= r.MaxPoint.X &&
+                    p.Y >= r.MinPoint.Y && p.Y <= r.MaxPoint.Y) return true;
+            }
+            return false;
+        }
+
+        /// <summary>比例备注：还原用的插入比例不是 1 时标注，如 @1:100（X/Y 不同时标 @100×150）。internal：BlockPicker 复用。</summary>
+        internal static string ScaleNote(Scale3d sc)
+        {
+            if (sc.X == 1 && sc.Y == 1) return "";
+            if (sc.X == sc.Y) return "@1:" + ScaleNum(sc.X);
+            return "@" + ScaleNum(sc.X) + "×" + ScaleNum(sc.Y);
+        }
+
+        private static string ScaleNum(double v)
+        {
+            return Math.Abs(v - Math.Round(v)) < 0.001 ? ((int)Math.Round(v)).ToString() : v.ToString("0.##");
+        }
+
         /// <summary>
-        /// 图框型「框选打印范围」：先照常扫描图框，再只保留图框中心落在用户框选区域内者。
+        /// 图框型「框选打印范围」：扫描时就只处理框内图框（预过滤），扫完再按图框中心复核一次。
         /// 区域为空 / null = 不过滤（全图）。用于复刻参考插件「执行命令后选择要打印的图框」。
         /// </summary>
         public static ScanResult ScanInRegions(Database db, FrameLibrary lib, GlobalConfig cfg,
                                                List<Extents2d> regions)
         {
-            ScanResult res = Scan(db, lib, cfg);
+            ScanResult res = Scan(db, lib, cfg, regions);
             if (res == null || regions == null || regions.Count == 0) return res;
             List<SheetItem> kept = new List<SheetItem>();
             foreach (SheetItem s in res.Sheets)

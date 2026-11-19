@@ -214,6 +214,69 @@ namespace MPlot
                 : new PaperSpec { Preset = "自定义", WidthMm = widthMm, HeightMm = heightMm, IsCustom = true };
             return r;
         }
+
+        /// <summary>常见出图比例（1:2 … 1:1000）。同一图框在 CAD 里常以 1:100、1:150 插入，
+        /// 实测尺寸是纸张 × 比例；只按实测尺寸查会掉进自定义。按从小到大试，还原后命中标准幅面即认。</summary>
+        private static readonly double[] ScaleDivisors = {
+            1, 2, 2.5, 4, 5, 10, 20, 25, 30, 50, 60, 75, 100, 150, 200, 250, 500, 1000
+        };
+
+        /// <summary>按插入比例还原后的尺寸反查纸张。sx/sy 是块参照的插入比例（X/Y）；
+        /// 旋转 90° 时 X/Y 对调，两种配对都试。prefer 为库内已设的纸张名：同一尺寸可对应
+        /// 多个「幅面×比例」组合时（如 84000×59400 既是 A1×100 也是 A3×200），优先拼出库内纸张。
+        /// 猜不到标准幅面时返回自定义（调用方应保留库纸张，不要拿它覆盖）。</summary>
+        public static PaperSpec GuessScaled(double widthMm, double heightMm, double sx, double sy, string prefer)
+        {
+            if (sx <= 0 || double.IsNaN(sx) || double.IsInfinity(sx)) sx = 1;
+            if (sy <= 0 || double.IsNaN(sy) || double.IsInfinity(sy)) sy = 1;
+            // 第一遍：优先拼出库内已设的纸张（有歧义时以库为准）
+            if (!string.IsNullOrEmpty(prefer))
+            {
+                foreach (double d in ScaleDivisors)
+                {
+                    if (MatchesPreset(widthMm / sx / d, heightMm / sy / d, prefer)) return Get(prefer);
+                    if (MatchesPreset(widthMm / sy / d, heightMm / sx / d, prefer)) return Get(prefer);
+                }
+            }
+            // 第二遍：没有库纸张可优先时，全量找「相对误差最小」的（幅面，比例）组合。
+            // 不能按比例从小到大取第一个就中的——小比例下大一号纸也可能落在 10% 吸附带内
+            // （如 1:150 的 A1 在 1:100 下会误吸成 A0），必须比完全局误差。
+            string bestName = ""; double bestRel = double.MaxValue;
+            foreach (double d in ScaleDivisors)
+            {
+                foreach (string n in Names)
+                {
+                    if (n == "自定义") continue;
+                    PaperSpec p = Get(n);
+                    double r1 = RelErr(widthMm / sx / d, heightMm / sy / d, p);
+                    double r2 = RelErr(widthMm / sy / d, heightMm / sx / d, p);
+                    double r = Math.Min(r1, r2);
+                    if (r < bestRel) { bestRel = r; bestName = n; }
+                }
+            }
+            if (bestName != "" && bestRel < 0.10) return Get(bestName);
+            return Guess(widthMm, heightMm);
+        }
+
+        /// <summary>尺寸与预设的相对误差之和（双向都算，取小值；用于比例吸附的全局比较）。</summary>
+        private static double RelErr(double w, double h, PaperSpec p)
+        {
+            if (w <= 0 || h <= 0) return double.MaxValue;
+            double e1 = Math.Abs(p.WidthMm - w) / p.WidthMm + Math.Abs(p.HeightMm - h) / p.HeightMm;
+            double e2 = Math.Abs(p.HeightMm - w) / p.HeightMm + Math.Abs(p.WidthMm - h) / p.WidthMm;
+            return Math.Min(e1, e2);
+        }
+
+        /// <summary>尺寸是否与指定预设吻合（相对误差之和 &lt; 10%，含 90° 旋转；与 Guess 吸附同阈）。</summary>
+        private static bool MatchesPreset(double w, double h, string name)
+        {
+            if (w <= 0 || h <= 0) return false;
+            PaperSpec p = Get(name);
+            if (p.IsCustom) return false;
+            double e1 = Math.Abs(p.WidthMm - w) / p.WidthMm + Math.Abs(p.HeightMm - h) / p.HeightMm;
+            double e2 = Math.Abs(p.HeightMm - w) / p.HeightMm + Math.Abs(p.WidthMm - h) / p.WidthMm;
+            return Math.Min(e1, e2) < 0.10;
+        }
     }
 
     // ================================================================ 单条图框配置

@@ -65,7 +65,7 @@ namespace MPlot
                 // lambda 让编译器自行推断委托类型，避免不同版本委托签名差异导致编译失败。
                 AcCore.DocumentManager.DocumentActivated += (s, e) =>
                 {
-                    try { if (!MenuBuilder.IsMenuCreated) MenuBuilder.EnsureMenu(); }
+                    try { if (!MenuBuilder.IsMenuCreated && !MenuBuilder.Uninstalled) MenuBuilder.EnsureMenu(); }
                     catch { }
                 };
                 try
@@ -93,10 +93,10 @@ namespace MPlot
             }
         }
 
-        /// <summary>CAD 空闲后重试挂菜单；已挂上就直接短路，不重复插入。</summary>
+        /// <summary>CAD 空闲后重试挂菜单；已挂上就直接短路，不重复插入；已卸载绝不重建。</summary>
         private static void OnIdle(object sender, EventArgs e)
         {
-            try { if (!MenuBuilder.IsMenuCreated) MenuBuilder.EnsureMenu(); }
+            try { if (!MenuBuilder.IsMenuCreated && !MenuBuilder.Uninstalled) MenuBuilder.EnsureMenu(); }
             catch { }
         }
 
@@ -322,7 +322,12 @@ namespace MPlot
                 List<Extents2d> regions = PickFrameRegions();
                 var acDoc = AcCore.DocumentManager.MdiActiveDocument;
                 if (acDoc == null) return;
+                // 扫描没有进度条（大图第一次扫描要全图读一次文字），命令行先报一声、扫完再报用时，
+                // 免得用户以为卡死了反复点。
+                AcadUtil.Say("正在扫描图框…");
+                System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
                 ScanResult scan = FrameScanner.ScanInRegions(acDoc.Database, lib, GlobalConfig.Current, regions);
+                AcadUtil.Say("扫描完成，共 " + scan.Sheets.Count + " 张，用时 " + sw.Elapsed.TotalSeconds.ToString("0.0") + " 秒。");
                 if (scan.Warnings.Count > 0)
                     Logger.Warn("图框扫描提示：" + string.Join("；", scan.Warnings.ToArray()));
                 if (scan.Sheets.Count == 0)
@@ -387,6 +392,12 @@ namespace MPlot
         [CommandMethod("MP_MENU")]
         public static void RebuildMenu()
         {
+            if (MenuBuilder.Uninstalled)
+            {
+                MessageBox.Show("本会话已一键卸载，菜单不再重建。\r\n如需恢复使用，请重新运行一键安装并重启 CAD。",
+                                "K-批量打印", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
             bool ok = MenuBuilder.RebuildMenu();
             MessageBox.Show(ok ? "菜单已重建：" + MenuBuilder.MenuTitle
                                : "菜单创建失败，可直接输入 MP_GENERAL / MP_FRAME / MP_PRINTSET 使用。",

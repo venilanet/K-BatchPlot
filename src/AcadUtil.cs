@@ -169,6 +169,22 @@ namespace MPlot
                 default: return 1.0;   // Unitless 等：按 mm 处理，建筑图绝大多数如此
             }
         }
+
+        /// <summary>块参照的插入比例（X/Y）。同一图框常以 1:100、1:150 插入，实测尺寸是纸张 × 比例；
+        /// 纸张识别必须先除以插入比例还原，否则 A1 会被认成 84100mm 的自定义纸。取不到/非法时返回 1。</summary>
+        public static Scale3d InsertionScale(BlockReference br)
+        {
+            if (br == null) return new Scale3d(1, 1, 1);
+            try
+            {
+                Scale3d s = br.ScaleFactors;
+                double x = s.X, y = s.Y;
+                if (x <= 0 || double.IsNaN(x) || double.IsInfinity(x)) x = 1;
+                if (y <= 0 || double.IsNaN(y) || double.IsInfinity(y)) y = 1;
+                return new Scale3d(x, y, 1);
+            }
+            catch { return new Scale3d(1, 1, 1); }
+        }
         #endregion
 
         #region ---- 块 / 范围 ----
@@ -206,8 +222,15 @@ namespace MPlot
         /// 图框外框范围。优先用「块定义几何 × 块变换」而不是 BlockReference.GeometricExtents：
         /// 后者会把属性文字（会签栏、外部附注）算进去，导致打印窗口偏大、图框被缩放。
         /// 块定义法失败（天正自定义对象、xref、代理）时退回参照自身的 extents。
+        /// defCache：同批扫描内按块定义缓存局部包围盒——同一图框插 10 次只算 1 次定义，
+        /// 否则每张图都要把定义里全部实体重算一遍（卡顿主因之一）。传 null 表示不缓存。
         /// </summary>
         public static Extents3d? FrameExtents(BlockReference br, Transaction tr)
+        {
+            return FrameExtents(br, tr, null);
+        }
+
+        public static Extents3d? FrameExtents(BlockReference br, Transaction tr, Dictionary<ObjectId, Extents3d> defCache)
         {
             if (br == null || tr == null) return null;
             try
@@ -218,25 +241,37 @@ namespace MPlot
                     BlockTableRecord def = tr.GetObject(defId, OpenMode.ForRead) as BlockTableRecord;
                     if (def != null && !def.IsFromExternalReference)
                     {
-                        double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
-                        bool any = false;
-                        foreach (ObjectId id in def)
+                        Extents3d local = new Extents3d();
+                        bool haveLocal = false;
+                        if (defCache != null && defCache.TryGetValue(defId, out local)) haveLocal = true;
+                        else
                         {
-                            Entity e = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                            if (e == null || e is AttributeDefinition) continue;   // 属性定义不计入外框
-                            Extents3d? ex = TryExtents(e);
-                            if (ex == null) continue;
-                            Extents3d v = ex.Value;
-                            minX = Math.Min(minX, v.MinPoint.X); minY = Math.Min(minY, v.MinPoint.Y);
-                            maxX = Math.Max(maxX, v.MaxPoint.X); maxY = Math.Max(maxY, v.MaxPoint.Y);
-                            any = true;
+                            double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+                            bool any = false;
+                            foreach (ObjectId id in def)
+                            {
+                                Entity e = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                                if (e == null || e is AttributeDefinition) continue;   // 属性定义不计入外框
+                                Extents3d? ex = TryExtents(e);
+                                if (ex == null) continue;
+                                Extents3d v = ex.Value;
+                                minX = Math.Min(minX, v.MinPoint.X); minY = Math.Min(minY, v.MinPoint.Y);
+                                maxX = Math.Max(maxX, v.MaxPoint.X); maxY = Math.Max(maxY, v.MaxPoint.Y);
+                                any = true;
+                            }
+                            if (any)
+                            {
+                                local = new Extents3d(new Point3d(minX, minY, 0), new Point3d(maxX, maxY, 0));
+                                haveLocal = true;
+                                if (defCache != null) defCache[defId] = local;
+                            }
                         }
-                        if (any)
+                        if (haveLocal)
                         {
                             Matrix3d m = br.BlockTransform;
                             Point3d[] pts = {
-                                new Point3d(minX, minY, 0), new Point3d(maxX, minY, 0),
-                                new Point3d(minX, maxY, 0), new Point3d(maxX, maxY, 0)
+                                new Point3d(local.MinPoint.X, local.MinPoint.Y, 0), new Point3d(local.MaxPoint.X, local.MinPoint.Y, 0),
+                                new Point3d(local.MinPoint.X, local.MaxPoint.Y, 0), new Point3d(local.MaxPoint.X, local.MaxPoint.Y, 0)
                             };
                             for (int i = 0; i < pts.Length; i++) pts[i] = pts[i].TransformBy(m);
                             double ax = double.MaxValue, ay = double.MaxValue, bx = double.MinValue, by = double.MinValue;

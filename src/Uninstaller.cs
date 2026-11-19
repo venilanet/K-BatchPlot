@@ -44,13 +44,18 @@ namespace MPlot
             }
             catch { }
 
+            // 先立已卸载标志：屏蔽 Idle/切图事件自动重建菜单，否则删完点确定又弹回来。
+            MenuBuilder.MarkUninstalled();
             // 1) 菜单立即移除
             bool menuOk = false;
             try { menuOk = MenuBuilder.RemoveMenu(); } catch { }
             sb.AppendLine(menuOk ? "· 菜单「K-批量打印」已移除。"
                                  : "· 菜单移除失败，请关闭 CAD 后在 CUI 里删除「K-批量打印」菜单并保存工作空间。");
             if (menuOk)
+            {
                 sb.AppendLine("· 注意：菜单可能已保存在 CUI 文件里；若重启 CAD 后它又出现，请在 CUI 里删除并保存工作空间。");
+                sb.AppendLine("· 本次会话内菜单不会再自动出现（已屏蔽自动重建）。");
+            }
 
             // 2) 定位本 DLL 与 .bundle 安装目录
             string dllPath = "";

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Reflection;
+using System.Text;
 using System.Text.RegularExpressions;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
@@ -335,6 +336,7 @@ namespace MPlot
         private static double ScoreValueAsDrawNo(string v)
         {
             if (string.IsNullOrEmpty(v)) return 0;
+            if (v.Trim().Length < 2) return 0;   // 单字不可能是真图号（"J" 这类碎片直接判死）
             double cn = Cjk.Matches(v).Count;
             if (cn >= 2) return -4;                        // 中文多 → 更像图名
             if (!CodeLike.IsMatch(v)) return 0;
@@ -347,6 +349,7 @@ namespace MPlot
         private static double ScoreValueAsTitle(string v)
         {
             if (string.IsNullOrEmpty(v)) return 0;
+            if (v.Trim().Length < 2) return 0;   // 单字不可能是真图名，与属性路径的单字丢弃规则一致
             int cn = Cjk.Matches(v).Count;
             double s = cn >= 2 ? 6 : 0;
             if (v.Length >= 2 && v.Length <= 40) s += 2;
@@ -512,37 +515,13 @@ namespace MPlot
             }
             catch (Exception ex) { Logger.Verbose("标题栏文字扫描失败：" + ex.Message); }
 
-            // 天正自定义文字对象不认 TEXT/MTEXT 过滤器时，反射补一次（只在小区域内）
+            // 天正自定义文字对象不认 TEXT/MTEXT 过滤器时，走统一文字扫描补一次（只在小区域内）。
+            // 扫描期间命中全图文字缓存，不再全空间重遍历；平时走实时遍历。
+            // 统一扫描覆盖普通文字/多行文字/块属性/块内文字/天正自定义文字/标注，比原来
+            // 只看顶层「名字带 Text/TCH 的实体」更全。
             if (texts.Count == 0)
             {
-                try
-                {
-                    using (Transaction tr = db.TransactionManager.StartTransaction())
-                    {
-                        BlockTableRecord btr = tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead) as BlockTableRecord;
-                        if (btr != null)
-                        {
-                            foreach (ObjectId id in btr)
-                            {
-                                Entity en = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                                if (en == null || en is DBText || en is MText) continue;
-                                string cls = en.GetType().Name ?? "";
-                                if (cls.IndexOf("Text", StringComparison.OrdinalIgnoreCase) < 0 &&
-                                    cls.IndexOf("TCH", StringComparison.OrdinalIgnoreCase) < 0) continue;
-                                Extents3d? ex = AcadUtil.TryExtents(en);
-                                if (!ex.HasValue) continue;
-                                Point3d c = new Point3d((ex.Value.MinPoint.X + ex.Value.MaxPoint.X) / 2,
-                                                        (ex.Value.MinPoint.Y + ex.Value.MaxPoint.Y) / 2, 0);
-                                if (c.X < x0 || c.X > x1 || c.Y < y0 || c.Y > y1) continue;
-                                string s = GetAnyText(en);
-                                if (!string.IsNullOrWhiteSpace(s)) texts.Add(new Tuple<string, Point3d>(CleanText(s), c));
-                                if (texts.Count > 60) break;
-                            }
-                        }
-                        tr.Commit();
-                    }
-                }
-                catch (Exception ex) { Logger.Verbose("天正文字对象扫描失败：" + ex.Message); }
+                texts = ScanTextsInRect(x0, y0, x1, y1);
             }
 
             // 按「从右到左、从上到下」排，标题栏里图名通常在最显眼的一行
@@ -569,6 +548,36 @@ namespace MPlot
             return m;
         }
 
+        /// <summary>把同一行、横向相邻的非中文文字碎片拼成一个图号（如 "J" + "01" → "J-01"）。
+        /// 图框标题栏里的图号常被拆成多个 TEXT 实体，单取最高分/最近的一段只会得到 "J" 这类碎片。
+        /// 只拼非中文碎片（中文是「图号」标签或图名，不参与图号拼接）；行差与间隙按矩形尺寸取相对值，
+        /// 所以 1:100 与 1:150 的同一图框用同一套阈值。seed 为锚点/最高分的那段文字。</summary>
+        private static string MergeDrawNoLine(List<Tuple<string, Point3d>> texts, Tuple<string, Point3d> seed,
+                                              double lineTol, double maxGap)
+        {
+            if (seed == null || string.IsNullOrWhiteSpace(seed.Item1)) return "";
+            if (lineTol <= 0) lineTol = 1;
+            if (maxGap <= 0) maxGap = 1;
+            List<Tuple<string, Point3d>> line = new List<Tuple<string, Point3d>>();
+            foreach (Tuple<string, Point3d> t in texts)
+            {
+                if (string.IsNullOrWhiteSpace(t.Item1)) continue;
+                if (Cjk.Matches(t.Item1).Count > 0) continue;
+                if (Math.Abs(t.Item2.Y - seed.Item2.Y) > lineTol) continue;
+                line.Add(t);
+            }
+            line.Sort(delegate(Tuple<string, Point3d> a, Tuple<string, Point3d> b)
+            { return a.Item2.X.CompareTo(b.Item2.X); });
+            int si = line.IndexOf(seed);
+            if (si < 0) return seed.Item1.Trim();
+            int lo = si, hi = si;
+            while (lo > 0 && (line[lo].Item2.X - line[lo - 1].Item2.X) <= maxGap) lo--;
+            while (hi < line.Count - 1 && (line[hi + 1].Item2.X - line[hi].Item2.X) <= maxGap) hi++;
+            StringBuilder sb = new StringBuilder();
+            for (int i = lo; i <= hi; i++) sb.Append(line[i].Item1.Trim());
+            return sb.ToString();
+        }
+
         /// <summary>
         /// 「点取图号/图名范围」的核心：读给定 WCS 矩形内的文字，按 prefer 挑出最像的一个值。
         /// prefer: drawno / title / rev / auto。同时覆盖普通 TEXT/MTEXT 与天正自定义文字对象。
@@ -582,6 +591,7 @@ namespace MPlot
 
             string p = (prefer ?? "auto").ToLowerInvariant();
             string best = ""; double bestScore = -999;
+            Tuple<string, Point3d> bestTuple = null;
             foreach (var t in texts)
             {
                 string s = t.Item1;
@@ -591,9 +601,23 @@ namespace MPlot
                 else if (p == "title") score = ScoreValueAsTitle(s) + (s.Length >= 4 ? 1 : 0);
                 else if (p == "rev") score = ScoreValueAsRev(s);
                 else score = Math.Max(ScoreValueAsDrawNo(s), ScoreValueAsTitle(s));  // auto
-                if (score > bestScore) { bestScore = score; best = s; }
+                if (score > bestScore) { bestScore = score; best = s; bestTuple = t; }
             }
-            return bestScore < 3 ? "" : best;
+            if (bestScore < 3) return "";
+            // 图号：最高分的一段再把同行相邻碎片拼上（"J" + "01" → "J-01"），拼完重打分，
+            // 拼出来的更好就用拼出来的；拼坏了（分数更低）仍用原来那段。
+            if (p == "drawno" && bestTuple != null)
+            {
+                double rectW = region.MaxPoint.X - region.MinPoint.X;
+                double rectH = region.MaxPoint.Y - region.MinPoint.Y;
+                string merged = MergeDrawNoLine(texts, bestTuple, rectH * 0.5, rectW * 0.6);
+                if (!string.IsNullOrEmpty(merged) && merged != best)
+                {
+                    double ms = ScoreValueAsDrawNo(merged) + (Cjk.Matches(merged).Count == 0 ? 2 : 0);
+                    if (ms >= bestScore && ms >= 3) return merged;
+                }
+            }
+            return best;
         }
 
         /// <summary>
@@ -617,18 +641,30 @@ namespace MPlot
         /// 按「人工点选确认过的锚点」读文字：在锚点附近找中心点最近的文字返回其值。
         /// 录入时用户点选了某段文字 → 存它的精确中心点；批打时每张图按同一相对位置找最近文字。
         /// 比打分猜更准，且不同图框各存各的位置，互不干扰。读不到返回空串。
+        /// mergeFragments=true（图号用）：最近的一段再把同行相邻碎片拼上（"J" + "01" → "J-01"）。
         /// </summary>
         public static string ReadAtNearest(double x, double y, double tol)
+        {
+            return ReadAtNearest(x, y, tol, false);
+        }
+
+        public static string ReadAtNearest(double x, double y, double tol, bool mergeFragments)
         {
             if (tol <= 0) tol = 500;
             List<Tuple<string, Point3d>> texts = ScanTextsInRect(x - tol, y - tol, x + tol, y + tol);
             string best = ""; double bestDist = double.MaxValue;
+            Tuple<string, Point3d> bestTuple = null;
             foreach (Tuple<string, Point3d> t in texts)
             {
                 if (string.IsNullOrEmpty(t.Item1)) continue;
                 double dx = t.Item2.X - x, dy = t.Item2.Y - y;
                 double d = dx * dx + dy * dy;
-                if (d < bestDist) { bestDist = d; best = t.Item1; }
+                if (d < bestDist) { bestDist = d; best = t.Item1; bestTuple = t; }
+            }
+            if (mergeFragments && bestTuple != null && Cjk.Matches(best).Count == 0)
+            {
+                string merged = MergeDrawNoLine(texts, bestTuple, tol * 0.05, tol * 0.3);
+                if (!string.IsNullOrEmpty(merged) && merged.Trim().Length >= 2) return merged;
             }
             return best;
         }
@@ -636,6 +672,31 @@ namespace MPlot
         // 扫描深度/数量上限：防止嵌套块或超大模型拖慢点取交互
         private const int MaxScanDepth = 6;
         private const int MaxScanTexts = 200;
+
+        // ---- 全图文字缓存（卡顿专项）----
+        // Scan 武装、EndTextCache 解除；第一次读值时才建缓存（一次全图遍历），
+        // 之后每张图的标题栏/锚点/区域读值都从缓存里筛，不再反复全图遍历。
+        // 只在 Scan 期间武装；平时（图框库点选等）走实时遍历，不留过期缓存。
+        private static List<Tuple<string, Point3d>> _textCache;
+        private static Database _textCacheDb;
+        private static bool _textCacheArmed;
+        private const int MaxCacheTexts = 10000;
+
+        /// <summary>为本次扫描武装全图文字缓存（只武装、不建；第一次读值时按需建）。</summary>
+        public static void BeginTextCache(Database db)
+        {
+            _textCache = null;
+            _textCacheDb = db;
+            _textCacheArmed = db != null;
+        }
+
+        /// <summary>解除全图文字缓存武装并丢弃缓存。</summary>
+        public static void EndTextCache()
+        {
+            _textCache = null;
+            _textCacheDb = null;
+            _textCacheArmed = false;
+        }
 
         /// <summary>
         /// 扫描 WCS 矩形内的「所有文字」，返回 (文字, 中心点 WCS)。
@@ -645,9 +706,32 @@ namespace MPlot
         /// </summary>
         private static List<Tuple<string, Point3d>> ScanTextsInRect(double x0, double y0, double x1, double y1)
         {
+            // 缓存已武装且是同一张图：第一次用时建缓存（一次全图遍历），之后只筛缓存。
+            // 一次全图遍历 ≈ 原来单次矩形扫描的成本；原来每张图要付 4 次，本轮之后全批只付 1 次。
+            if (_textCacheArmed && _textCacheDb != null)
+            {
+                Database cur = AcadUtil.Db;
+                if (cur != null && cur == _textCacheDb)
+                {
+                    if (_textCache == null)
+                        _textCache = ScanTextsCore(_textCacheDb,
+                            double.MinValue, double.MinValue, double.MaxValue, double.MaxValue, MaxCacheTexts);
+                    List<Tuple<string, Point3d>> hit = new List<Tuple<string, Point3d>>();
+                    foreach (Tuple<string, Point3d> t in _textCache)
+                        if (InRect(t.Item2, x0, y0, x1, y1)) hit.Add(t);
+                    return hit;
+                }
+            }
+            return ScanTextsCore(AcadUtil.Db, x0, y0, x1, y1, MaxScanTexts);
+        }
+
+        /// <summary>一次遍历取矩形内文字（cap 为结果上限；缓存用大上限、全图矩形）。</summary>
+        private static List<Tuple<string, Point3d>> ScanTextsCore(Database db, double x0, double y0,
+                                                                  double x1, double y1, int cap)
+        {
             List<Tuple<string, Point3d>> texts = new List<Tuple<string, Point3d>>();
-            Database db = AcadUtil.Db;
             if (db == null) return texts;
+            if (cap <= 0) cap = MaxScanTexts;
 
             try
             {
@@ -679,10 +763,10 @@ namespace MPlot
                         if (btr == null) continue;
                         foreach (ObjectId id in btr)
                         {
-                            if (texts.Count >= MaxScanTexts) break;
+                            if (texts.Count >= cap) break;
                             Entity en = tr.GetObject(id, OpenMode.ForRead) as Entity;
                             if (en == null) continue;
-                            CollectTextsRec(en, tr, Matrix3d.Identity, 0, x0, y0, x1, y1, texts, visited);
+                            CollectTextsRec(en, tr, Matrix3d.Identity, 0, x0, y0, x1, y1, texts, visited, cap);
                         }
                     }
                     tr.Commit();
@@ -699,9 +783,9 @@ namespace MPlot
         /// </summary>
         private static void CollectTextsRec(Entity en, Transaction tr, Matrix3d xform, int depth,
                                             double x0, double y0, double x1, double y1,
-                                            List<Tuple<string, Point3d>> texts, HashSet<ObjectId> visited)
+                                            List<Tuple<string, Point3d>> texts, HashSet<ObjectId> visited, int cap)
         {
-            if (en == null || depth > MaxScanDepth || texts.Count >= MaxScanTexts) return;
+            if (en == null || depth > MaxScanDepth || texts.Count >= cap) return;
 
             // ---- 1) 块参照：先读块属性，再递归块定义里的文字 ----
             // 只读顶层块引用的属性：嵌套子块的属性不读（depth > 0 时跳过 1a），
@@ -720,7 +804,7 @@ namespace MPlot
                         if (ac != null)
                             foreach (ObjectId aid in ac)
                             {
-                                if (texts.Count >= MaxScanTexts) break;
+                                if (texts.Count >= cap) break;
                                 AttributeReference ar = tr.GetObject(aid, OpenMode.ForRead) as AttributeReference;
                                 if (ar == null) continue;
                                 bool invisible = false;
@@ -748,10 +832,10 @@ namespace MPlot
                             Matrix3d next = Multiply(xform, br.BlockTransform);
                             foreach (ObjectId cid in def)
                             {
-                                if (texts.Count >= MaxScanTexts) break;
+                                if (texts.Count >= cap) break;
                                 Entity child = tr.GetObject(cid, OpenMode.ForRead) as Entity;
                                 if (child == null) continue;
-                                CollectTextsRec(child, tr, next, depth + 1, x0, y0, x1, y1, texts, visited);
+                                CollectTextsRec(child, tr, next, depth + 1, x0, y0, x1, y1, texts, visited, cap);
                             }
                         }
                         visited.Remove(defId);   // 同一块定义被多处引用时都要扫（各实例变换不同）
