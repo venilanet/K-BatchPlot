@@ -415,7 +415,8 @@ namespace MPlot
             catch { return false; }
         }
 
-        private static ObjectId GetLayoutId(BlockTableRecord btr, Transaction tr)
+        /// <summary>图框所在空间对应的布局（模型空间返回 Null，由 Plotter 回退到当前布局）。internal：BlockPicker 复用。</summary>
+        internal static ObjectId GetLayoutId(BlockTableRecord btr, Transaction tr)
         {
             try
             {
@@ -425,8 +426,8 @@ namespace MPlot
             catch { return ObjectId.Null; }
         }
 
-        /// <summary>库内纸张与实测尺寸是否一致（两边相对误差之和 &lt; 10% 算一致，含 90° 旋转；与 Guess 吸附同阈）。</summary>
-        private static bool PaperMatches(PaperSpec p, double wMm, double hMm)
+        /// <summary>库内纸张与实测尺寸是否一致（两边相对误差之和 &lt; 10% 算一致，含 90° 旋转；与 Guess 吸附同阈）。internal：BlockPicker 复用。</summary>
+        internal static bool PaperMatches(PaperSpec p, double wMm, double hMm)
         {
             if (p == null || p.WidthMm <= 0 || p.HeightMm <= 0 || wMm <= 0 || hMm <= 0) return false;
             double e1 = Math.Abs(p.WidthMm - wMm) / p.WidthMm + Math.Abs(p.HeightMm - hMm) / p.HeightMm;
@@ -434,7 +435,8 @@ namespace MPlot
             return Math.Min(e1, e2) < 0.10;
         }
 
-        private static bool NeedsRotation(double wMm, double hMm, PaperSpec paper, bool enabled)
+        /// <summary>竖向图框配横向纸张时是否需要旋转 90°。internal：BlockPicker 复用。</summary>
+        internal static bool NeedsRotation(double wMm, double hMm, PaperSpec paper, bool enabled)
         {
             if (!enabled || paper == null || paper.HeightMm <= 0 || hMm <= 0) return false;
             bool framePortrait = wMm / hMm < 0.85;

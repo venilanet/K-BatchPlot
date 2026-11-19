@@ -89,6 +89,7 @@
     <Compile Include="AttrReader.cs" />
     <Compile Include="PaperMatcher.cs" />
     <Compile Include="FrameScanner.cs" />
+    <Compile Include="BlockPicker.cs" />
     <Compile Include="Naming.cs" />
     <Compile Include="Plotter.cs" />
     <Compile Include="BuiltInPdfMerge.cs" />

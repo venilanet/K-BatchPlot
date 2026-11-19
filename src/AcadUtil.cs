@@ -261,21 +261,43 @@ namespace MPlot
         /// ① 块名已在图框库里登记的；② 否则几何包围盒面积最大的（图框外框一定比里面的子块大）。
         /// 单选 / ESC / 空选时行为不变（单选直接返回，空选返回 Null）。
         /// </summary>
-        public static ObjectId PickFrameInsert()
+        /// <summary>
+        /// 一次 GetSelection：用户连续点选，回车结束、Esc 取消。
+        /// insertOnly=true 只认 INSERT（PickFrameInsert 用）；false 不过滤，由调用方分类
+        /// （点选图框用：这样才能把「点了不是块的东西」单独报出来，而不是让过滤器悄悄吞掉）。
+        /// 返回 null = Esc 取消；空列表 = 回车时一个没选。挑选中不碰数据库。
+        /// </summary>
+        private static List<ObjectId> PickObjects(bool insertOnly, string prompt)
         {
             Editor ed = Ed;
-            if (ed == null) return ObjectId.Null;
+            if (ed == null) return null;
             PromptSelectionOptions pso = new PromptSelectionOptions();
-            pso.MessageForAdding = "\n框选模型里的图框（支持窗选 / 多选，只认图块）: ";
+            pso.MessageForAdding = prompt;
             pso.MessageForRemoval = "\n移除误选对象: ";
             pso.AllowDuplicates = false;
-            TypedValue[] filter = { new TypedValue((int)DxfCode.Start, "INSERT") };
-            PromptSelectionResult psr = ed.GetSelection(pso, new SelectionFilter(filter));
-            if (psr.Status != PromptStatus.OK || psr.Value == null || psr.Value.Count == 0) return ObjectId.Null;
+            PromptSelectionResult psr;
+            if (insertOnly)
+            {
+                TypedValue[] filter = { new TypedValue((int)DxfCode.Start, "INSERT") };
+                psr = ed.GetSelection(pso, new SelectionFilter(filter));
+            }
+            else
+            {
+                psr = ed.GetSelection(pso);
+            }
+            if (psr.Status == PromptStatus.Cancel) return null;   // Esc：整批取消
+            if (psr.Status != PromptStatus.OK || psr.Value == null || psr.Value.Count == 0)
+                return new List<ObjectId>();   // 回车时一个没选
             List<ObjectId> ids = new List<ObjectId>();
             foreach (SelectedObject so in psr.Value)
                 if (so != null && !so.ObjectId.IsNull) ids.Add(so.ObjectId);
-            if (ids.Count == 0) return ObjectId.Null;
+            return ids;
+        }
+
+        public static ObjectId PickFrameInsert()
+        {
+            List<ObjectId> ids = PickObjects(true, "\n框选模型里的图框（支持窗选 / 多选，只认图块）: ");
+            if (ids == null || ids.Count == 0) return ObjectId.Null;
             if (ids.Count == 1) return ids[0];
 
             FrameLibrary lib = null;
@@ -305,6 +327,15 @@ namespace MPlot
             }
             catch (Exception ex) { Logger.Verbose("框选图框挑块失败，退回第一条：" + ex.Message); return ids[0]; }
             return best.IsNull ? ids[0] : best;
+        }
+
+        /// <summary>
+        /// 点选图框：一次选择拿回全部 ObjectId（null = Esc 取消），不过滤 INSERT，
+        /// 由 BlockPicker 再分类——非块对象单独计数回报，不悄悄吞掉。
+        /// </summary>
+        public static List<ObjectId> PickBlockReferences()
+        {
+            return PickObjects(false, "\n点选图框块（可点选多个，回车结束，Esc 取消）: ");
         }
 
         /// <summary>

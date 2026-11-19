@@ -327,13 +327,15 @@ namespace MPlot
                     Logger.Warn("图框扫描提示：" + string.Join("；", scan.Warnings.ToArray()));
                 if (scan.Sheets.Count == 0)
                 {
-                    MessageBox.Show("没有找到可打印的图框。\n请确认：①已录入图框信息；②框选范围内确有图框；③或直接回车扫描全图。",
-                                    "K-批量打印", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
+                    // 扫描不到图框也不直接走人：给用户开空白清单的机会，清单里点「点选图框」逐个加入。
+                    DialogResult r = MessageBox.Show("没有找到可打印的图框。\n请确认：①已录入图框信息；②框选范围内确有图框；③或直接回车扫描全图。\n\n要打开空白清单、手动点选图框吗？",
+                                    "K-批量打印", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                    if (r != DialogResult.Yes) return;
+                    // 落空清单继续走：用户可在清单里点「点选图框」逐个加入
                 }
 
                 List<SheetItem> confirmed;
-                using (FrameBatchForm ff = new FrameBatchForm(scan.Sheets))
+                using (FrameBatchForm ff = new FrameBatchForm(scan.Sheets, lib))
                 {
                     ShowForm(ff);
                     if (!ff.Confirmed) return;

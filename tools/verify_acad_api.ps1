@@ -162,6 +162,7 @@ Check 'Autodesk.AutoCAD.PlottingServices.PlotProgressDialog' @('.ctor','IsVisibl
 Write-Host ''
 Write-Host '=== 3. 图框 / 属性 / 表格 ===' -ForegroundColor Yellow
 Check 'Autodesk.AutoCAD.DatabaseServices.BlockReference' @('Name','DynamicBlockTableRecord','BlockTableRecord','IsDynamicBlock','AttributeCollection','Position','Rotation','ScaleFactors','BlockTransform','Bounds','DynamicBlockReferencePropertyCollection')
+Check 'Autodesk.AutoCAD.DatabaseServices.Entity' @('GeometricExtents')
 Check 'Autodesk.AutoCAD.DatabaseServices.DynamicBlockReferencePropertyCollection' @('Count','GetEnumerator')
 Check 'Autodesk.AutoCAD.DatabaseServices.DynamicBlockReferenceProperty' @('Name','Value')
 Check 'Autodesk.AutoCAD.DatabaseServices.AttributeReference' @('Tag','TextString','Position','Height','Rotation','Justify','IsMTextAttribute','Invisible')
