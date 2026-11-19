@@ -256,12 +256,6 @@ namespace MPlot
         }
 
         /// <summary>
-        /// 框选录入：只允许选 INSERT。窗选会同时选中图框块、嵌套子块和其他块，
-        /// 直接取第一条会「同图框不同拾取点抓到不同块」——所以多选时按优先级挑：
-        /// ① 块名已在图框库里登记的；② 否则几何包围盒面积最大的（图框外框一定比里面的子块大）。
-        /// 单选 / ESC / 空选时行为不变（单选直接返回，空选返回 Null）。
-        /// </summary>
-        /// <summary>
         /// 一次 GetSelection：用户连续点选，回车结束、Esc 取消。
         /// insertOnly=true 只认 INSERT（PickFrameInsert 用）；false 不过滤，由调用方分类
         /// （点选图框用：这样才能把「点了不是块的东西」单独报出来，而不是让过滤器悄悄吞掉）。
@@ -294,6 +288,12 @@ namespace MPlot
             return ids;
         }
 
+        /// <summary>
+        /// 框选录入：只允许选 INSERT。窗选会同时选中图框块、嵌套子块和其他块，
+        /// 直接取第一条会「同图框不同拾取点抓到不同块」——所以多选时按优先级挑：
+        /// ① 块名已在图框库里登记的；② 否则几何包围盒面积最大的（图框外框一定比里面的子块大）。
+        /// 单选 / ESC / 空选时行为不变（单选直接返回，空选返回 Null）。
+        /// </summary>
         public static ObjectId PickFrameInsert()
         {
             List<ObjectId> ids = PickObjects(true, "\n框选模型里的图框（支持窗选 / 多选，只认图块）: ");
