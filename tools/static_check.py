@@ -1014,6 +1014,98 @@ def check_round7():
     return checks, issues
 
 
+def check_structure():
+    """结构自检（第八轮热修引入）：方法定义必须在类层级，绝不能嵌在另一个方法里。
+    只数字符串/注释外的括号、只数括号总数查不出这类错——fa4184b 的 ApplyRegionAnchor
+    被插进 ScanInRegions 方法中间，括号总数仍平衡，却报一堆 CS1519/CS0116。
+    规则：逐行跟踪深度（0=文件外，1=namespace，2=class），方法定义只允许出现在
+    各文件方法定义的最小深度上；文件末尾深度必须归零。"""
+    import re
+    checks, issues = [], []
+
+    def strip_line(s):
+        out = []
+        i = 0
+        in_str = False
+        in_ch = False
+        while i < len(s):
+            c = s[i]
+            if in_str:
+                if c == '\\':
+                    i += 2
+                    continue
+                if c == '"':
+                    in_str = False
+                i += 1
+                continue
+            if in_ch:
+                if c == '\\':
+                    i += 2
+                    continue
+                if c == "'":
+                    in_ch = False
+                i += 1
+                continue
+            if c == '/' and i + 1 < len(s) and s[i + 1] == '/':
+                break
+            if c == '"':
+                in_str = True
+                i += 1
+                continue
+            if c == "'":
+                in_ch = True
+                i += 1
+                continue
+            out.append(c)
+            i += 1
+        return ''.join(out)
+
+    for root, _dirs, files in os.walk(os.path.join(ROOT, "src")):
+        for fn in sorted(files):
+            if not fn.endswith(".cs"):
+                continue
+            rel = os.path.relpath(os.path.join(root, fn), ROOT)
+            lines = open(os.path.join(root, fn), encoding="utf-8-sig").read().split("\n")
+            depth = 0
+            depths = []
+            for n, l in enumerate(lines, 1):
+                m = re.match(r"^        (public|private|internal|protected)\b.*\(", l)
+                if m and not l.rstrip().endswith(";"):
+                    # 签名可能占多行：按括号配对找到签名结尾，再看下一行是不是 {。
+                    # 只看下一行会漏掉两行签名的定义（第八轮热修的教训）。
+                    par = 0
+                    k = n - 1
+                    sig_end = None
+                    while k < len(lines):
+                        cl = strip_line(lines[k])
+                        par += cl.count("(") - cl.count(")")
+                        if par == 0 and ")" in cl:
+                            sig_end = k
+                            break
+                        k += 1
+                    if sig_end is not None:
+                        j = sig_end + 1
+                        while j < len(lines) and lines[j].strip() == "":
+                            j += 1
+                        nxt = lines[j].strip() if j < len(lines) else ""
+                        if nxt == "{":
+                            depths.append((n, depth, l.strip()[:60]))
+                clean = strip_line(l)
+                depth += clean.count("{") - clean.count("}")
+                if depth < 0:
+                    issues.append("%s:%d 大括号深度为负，结构已乱" % (rel, n))
+                    depth = 0
+            if depth != 0:
+                issues.append("%s 文件末尾深度 %d（应为 0），缺闭合括号" % (rel, depth))
+            if depths:
+                base = min(d for _n, d, _t in depths)
+                for n, d, t in depths:
+                    if d > base:
+                        issues.append("%s:%d 方法定义嵌在别的方法里（深度 %d）：%s" % (rel, n, d, t))
+                checks.append("%s：%d 个方法定义都在类层级（深度 %d）" % (rel, len(depths), base))
+    return checks, issues
+
+
 def check_round8():
     """2026-11-19 第八轮（真机反馈：框选了图号范围，点选图框仍读出带 J 的图号；
     1:150 的 D-SM 图号错、1:100 的 D-XT 图号对）的防回退规则。
@@ -1231,6 +1323,13 @@ def main():
     for i in r7_issues:
         print("  [X] " + i)
 
+    print("\n--- 结构自检（方法不得嵌在方法里）---")
+    st_checks, st_issues = check_structure()
+    for c in st_checks:
+        print("  " + c)
+    for i in st_issues:
+        print("  [X] " + i)
+
     print("\n--- 第八轮防回退自检（点选图框不用框选范围 / 区域同分）---")
     r8_checks, r8_issues = check_round8()
     for c in r8_checks:
@@ -1238,7 +1337,7 @@ def main():
     for i in r8_issues:
         print("  [X] " + i)
 
-    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues or r7_issues or r8_issues)
+    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues or r7_issues or r8_issues or st_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
     print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")
