@@ -459,13 +459,16 @@ namespace MPlot
             // 用「定位选中图纸」缩放查看、或预览改动视图后就过期了，拿旧值打印会打到空地方（白纸）。
             // WindowWcs 是模型坐标、与视图无关，是唯一可信的源；单张打印（PlotSingle）
             // 只给了 DCS 窗口且是刚框选的，仍用原值。
+            // 注意：SheetItem 的 WindowWcs/WindowDcs 都是非空 Extents2d，不能调 .HasValue
+            // （PlotRequest 里的 WindowDcs 才是可空的；这里用退化判断代替）。
             Extents2d? windowDcs = null;
             if (!preserveLayout && !s.IsGeneralLayout)
             {
                 if (s.WindowWcs.MaxPoint.X > s.WindowWcs.MinPoint.X
                     && s.WindowWcs.MaxPoint.Y > s.WindowWcs.MinPoint.Y)
                     windowDcs = AcadUtil.WcsRectToDcs(s.WindowWcs);
-                else if (s.WindowDcs.HasValue)
+                else if (s.WindowDcs.MaxPoint.X > s.WindowDcs.MinPoint.X
+                    && s.WindowDcs.MaxPoint.Y > s.WindowDcs.MinPoint.Y)
                     windowDcs = s.WindowDcs;
             }
 

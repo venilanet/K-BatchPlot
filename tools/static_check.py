@@ -864,6 +864,16 @@ def check_round5():
         checks.append("BuildRequest 导出时按当前视图重算 DCS 窗口（旧 DCS 在定位/预览改视图后会过期致白纸）")
     else:
         issues.append("空白页回退：BuildRequest 仍用扫描时存的旧 WindowDcs")
+    # CS1061：SheetItem 的 WindowWcs/WindowDcs 是非空 Extents2d，不能调 .HasValue
+    # （只有 PlotRequest 的 WindowDcs 是可空的；BatchEngine 里只能对 s. 用退化判断）。
+    if "WindowDcs.HasValue" in batch or "WindowWcs.HasValue" in batch:
+        issues.append("编译回退 CS1061：BatchEngine 对非空的 SheetItem 窗口调了 .HasValue")
+    else:
+        checks.append("BatchEngine 不对非空的 SheetItem 窗口调 .HasValue（CS1061 防回退）")
+    if "WindowWcs.HasValue" in scanner or "WindowWcs.HasValue" in picker:
+        issues.append("编译回退 CS1061：Scan/点选对非空的 WindowWcs 调了 .HasValue")
+    else:
+        checks.append("Scan/点选不对非空的 WindowWcs 调 .HasValue")
 
     # 卡顿：全图文字缓存、定义包围盒缓存、矩形兜底跳过、框选预过滤、扫描进度提示。
     if "BeginTextCache" in reader and "EndTextCache" in reader and "ScanTextsCore" in reader:
