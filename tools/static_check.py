@@ -1231,6 +1231,84 @@ def check_round9():
     return checks, issues
 
 
+def check_round10():
+    """2026-11-19 第十轮（真机反馈：默认纸张认错 A1→A3、比例锁死不跟纸张、
+    预览看不清、导出前整批预览多余、A0 改 A3 只打局部）的防回退规则。
+    修：SyncRow 不再读比例格（只用户真正改比例格才算手动，且与自动值相同不锁）；
+    GuessScaled 先按真实插入比例还原、拿掉库优先；单张预览可自由缩放/平移；
+    导出前整批预览闸门撤掉（钩子不再注册、设置开关去掉）；改纸张时比例清回自动；
+    顶部「应用比例」填 0 一键清回自动。grep 级别。"""
+    checks, issues = [], []
+
+    def read(rel):
+        pp = os.path.join(ROOT, rel)
+        return open(pp, encoding="utf-8-sig").read() if os.path.isfile(pp) else ""
+
+    form = read("src/UI/FrameBatchForm.cs")
+    models = read("src/Models.cs")
+    forms = read("src/UI/Forms.cs")
+    commands = read("src/Commands.cs")
+
+    # 1. SyncRow 不读比例格（锁死的根子）：SyncRow 方法体内不得出现 ParseDenCell
+    m = re.search(r"private void SyncRow\(int row\)\s*\{(.*?)(?=\n        /// <summary>比例格只有用户真正双击改了才算手动)",
+                  form, re.S)
+    if m and "ParseDenCell" not in m.group(1) and "不读比例格" in m.group(1):
+        checks.append("SyncRow 不再读比例格（显示的自动比例不会被锁成手动）")
+    else:
+        issues.append("第十轮回退：SyncRow 又在读比例格，预览/定位后全表比例会被锁死")
+    if "private void SyncScaleCell" in form and "OnCellEndEdit" in form \
+            and "if (e.ColumnIndex == C_DEN) SyncScaleCell(e.RowIndex);" in form:
+        checks.append("比例只有用户真正改比例格才算手动（CellEndEdit 路由到 SyncScaleCell）")
+    else:
+        issues.append("第十轮回退：比例格手动入口缺失或接线不对")
+    if "EffectiveDenAuto" in form and "Math.Abs(den - autoDen) < 0.001" in form:
+        checks.append("填的值与自动值相同不锁死（恢复自动）")
+    else:
+        issues.append("第十轮回退：填自动值也会锁死")
+    # 2. GuessScaled：真实插入比例先还原、拿掉库优先
+    if "MatchPreset(widthMm / sx, heightMm / sy)" in models and "private static string MatchPreset" in models:
+        checks.append("GuessScaled 先按真实插入比例还原（默认按真实图框）")
+    else:
+        issues.append("第十轮回退：GuessScaled 缺真实比例先还原，A1 会被认成 A3")
+    if "MatchesPreset(widthMm / sx / d, heightMm / sy / d, prefer)" not in models:
+        checks.append("库优先已拿掉（库里记错的纸张不再压过量出来的真实纸张）")
+    else:
+        issues.append("第十轮回退：GuessScaled 里库优先还在，A1 仍会被认成 A3")
+    # 3. 单张预览可自由缩放/平移
+    if "private void SetZoom" in forms and "private void FitZoom" in forms \
+            and "Canvas_MouseWheel" in forms and "Pic_MouseDown" in forms:
+        checks.append("单张预览可自由缩放（滚轮以鼠标为中心）/ 拖动平移 / 适合窗口")
+    else:
+        issues.append("第十轮回退：单张预览不能自由放大")
+    if "实际大小 (100%)" in forms and "UpdateZoomLabel" in forms:
+        checks.append("单张预览有实际大小按钮与缩放百分比")
+    else:
+        issues.append("第十轮回退：单张预览缺实际大小/缩放百分比")
+    # 4. 导出前整批预览闸门撤掉
+    if "BatchEngine.PreviewHook = delegate" not in commands:
+        checks.append("导出前整批预览闸门已撤（钩子不再注册，导出不再弹整批预览）")
+    else:
+        issues.append("第十轮回退：导出前整批预览钩子还在注册")
+    if "_preview = Ui.C" not in forms and "Ui.Row(_preview)" not in forms:
+        checks.append("设置里「打印前先预览」开关已去掉（不再误导）")
+    else:
+        issues.append("第十轮回退：设置里还有已失效的预览开关")
+    if "class PrintPreviewForm" in forms and "PreviewHook" in read("src/BatchEngine.cs"):
+        checks.append("窗体与钩子机制保留（PrintPreviewForm / PreviewHook，可恢复）")
+    else:
+        issues.append("第十轮回退：预览窗体/钩子机制被删光，无法恢复")
+    # 5. 改纸张时比例清回自动；顶部比例填 0 一键清回自动
+    if "ApplyPaperToSelected" in form and form.count("ScaleDenominator = 0;") >= 4:
+        checks.append("改纸张时比例清回自动（批量与单行下拉都清，A0 改 A3 不再只打局部）")
+    else:
+        issues.append("第十轮回退：改纸张不清理手动比例，A0 改 A3 仍只打局部")
+    if "if (den == 0)" in form and "清回自动" in form:
+        checks.append("顶部「应用比例」填 0 一键清回自动（已锁死的行可解锁）")
+    else:
+        issues.append("第十轮回退：顶部比例填 0 不能清回自动")
+    return checks, issues
+
+
 def main():
     tree = ET.parse(CSPROJ)
     listed = sorted(e.attrib["Include"].replace("\\", "/") for e in tree.findall(".//m:Compile", NS))
@@ -1426,7 +1504,14 @@ def main():
     for i in r9_issues:
         print("  [X] " + i)
 
-    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues or r7_issues or r8_issues or r9_issues or st_issues)
+    print("\n--- 第十轮防回退自检（比例锁死 / 纸张认错 / 预览放大 / 整批预览撤 / 改纸张只打局部）---")
+    r10_checks, r10_issues = check_round10()
+    for c in r10_checks:
+        print("  " + c)
+    for i in r10_issues:
+        print("  [X] " + i)
+
+    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues or r7_issues or r8_issues or r9_issues or r10_issues or st_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
     print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")

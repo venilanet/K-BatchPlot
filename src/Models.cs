@@ -222,23 +222,26 @@ namespace MPlot
         };
 
         /// <summary>按插入比例还原后的尺寸反查纸张。sx/sy 是块参照的插入比例（X/Y）；
-        /// 旋转 90° 时 X/Y 对调，两种配对都试。prefer 为库内已设的纸张名：同一尺寸可对应
-        /// 多个「幅面×比例」组合时（如 84000×59400 既是 A1×100 也是 A3×200），优先拼出库内纸张。
+        /// 旋转 90° 时 X/Y 对调，两种配对都试。先按真实插入比例还原（第零遍），
+        /// 对不上再全量比对全局最小相对误差。prefer 参数已废弃（库纸张不再优先，
+        // 否则库里记错的纸张会压过量出来的真实纸张），调用方传 "" 即可。
         /// 猜不到标准幅面时返回自定义（调用方应保留库纸张，不要拿它覆盖）。</summary>
         public static PaperSpec GuessScaled(double widthMm, double heightMm, double sx, double sy, string prefer)
         {
             if (sx <= 0 || double.IsNaN(sx) || double.IsInfinity(sx)) sx = 1;
             if (sy <= 0 || double.IsNaN(sy) || double.IsInfinity(sy)) sy = 1;
-            // 第一遍：优先拼出库内已设的纸张（有歧义时以库为准）
-            if (!string.IsNullOrEmpty(prefer))
-            {
-                foreach (double d in ScaleDivisors)
-                {
-                    if (MatchesPreset(widthMm / sx / d, heightMm / sy / d, prefer)) return Get(prefer);
-                    if (MatchesPreset(widthMm / sy / d, heightMm / sx / d, prefer)) return Get(prefer);
-                }
-            }
-            // 第二遍：没有库纸张可优先时，全量找「相对误差最小」的（幅面，比例）组合。
+            // 第零遍：先按块参照真实的插入比例还原（图上这张图框的真实纸张），
+            // 能对上标准幅面就直接认——库里记的纸张不能反过来覆盖图上的真实尺寸。
+            // 反例：A1 以 1:100 插入，实测 84100×59400，库里若记成 A3，旧的
+            // 库优先会试 divisor 2 拼出 A3（84000×59400 既是 A1×100 也是 A3×200），
+            // 纸张与比例全错（2026-11-19 真机反馈：真实 A1 1:100 显示成 A3 1:200）。
+            // 只有真实比例还原后对不上任何标准幅面（如比例 baked 进定义、sx=1），
+            // 才往下走全量比对（全局最小相对误差，不再库优先——库里记错的纸张
+            // 会压过量出来的真实纸张，模拟 13 个 case 已验：拿掉库优先后全对）。
+            string scaleFirst = MatchPreset(widthMm / sx, heightMm / sy);
+            if (scaleFirst == "") scaleFirst = MatchPreset(widthMm / sy, heightMm / sx);
+            if (scaleFirst != "") return Get(scaleFirst);
+            // 第二遍：全量找「相对误差最小」的（幅面，比例）组合。
             // 不能按比例从小到大取第一个就中的——小比例下大一号纸也可能落在 10% 吸附带内
             // （如 1:150 的 A1 在 1:100 下会误吸成 A0），必须比完全局误差。
             string bestName = ""; double bestRel = double.MaxValue;
@@ -256,6 +259,21 @@ namespace MPlot
             }
             if (bestName != "" && bestRel < 0.10) return Get(bestName);
             return Guess(widthMm, heightMm);
+        }
+
+        /// <summary>按尺寸反查标准幅面名（相对误差之和 &lt; 10%，含 90° 旋转）；对不上返回 ""。</summary>
+        private static string MatchPreset(double w, double h)
+        {
+            if (w <= 0 || h <= 0) return "";
+            string bestName = ""; double bestRel = double.MaxValue;
+            foreach (string n in Names)
+            {
+                if (n == "自定义") continue;
+                PaperSpec p = Get(n);
+                double r = RelErr(w, h, p);
+                if (r < bestRel) { bestRel = r; bestName = n; }
+            }
+            return bestRel < 0.10 ? bestName : "";
         }
 
         /// <summary>尺寸与预设的相对误差之和（双向都算，取小值；用于比例吸附的全局比较）。</summary>

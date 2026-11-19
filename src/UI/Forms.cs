@@ -365,7 +365,7 @@ namespace MPlot
     public sealed class SettingsForm : Form
     {
         private readonly ComboBox _dev, _ctb, _colorMode, _scale, _printer;
-        private readonly CheckBox _styles, _lw, _center, _rot, _preview;
+        private readonly CheckBox _styles, _lw, _center, _rot;
         private readonly NumericUpDown _ox, _oy, _margin, _num, _den, _copies;
 
         public SettingsForm()
@@ -396,7 +396,6 @@ namespace MPlot
             _lw = Ui.C("打印线宽", c.PlotWithLineweights);
             _center = Ui.C("居中打印", c.PlotCentered);
             _rot = Ui.C("图框旋转 90° 时自动旋转纸张", c.RotateToBestFit);
-            _preview = Ui.C("打印前先预览（可逐张确认，关掉则一键直出）", c.PreviewBeforePrint);
             _ox = Ui.N(c.PlotOffsetX, -500, 500, 1); _oy = Ui.N(c.PlotOffsetY, -500, 500, 1);
             _margin = Ui.N(c.WindowMarginMm, 0, 100, 1);
             _num = Ui.N(c.CustomScaleNumerator, 0.01, 10000, 2);
@@ -412,7 +411,6 @@ namespace MPlot
             p.Controls.Add(Ui.Row(Ui.L("颜色输出", 120), _colorMode,
                                   Ui.L("快捷预设，选完可直接改 CTB")));
             p.Controls.Add(Ui.Row(_styles, _lw, _center));
-            p.Controls.Add(Ui.Row(_preview));
             p.Controls.Add(Ui.Row(Ui.L("打印偏移 X/Y (mm)", 120), _ox, _oy));
             p.Controls.Add(Ui.Row(Ui.L("四边留白 (mm)", 120), _margin,
                                   Ui.L("纸张不变、内容缩小留白，默认 2mm；设 0 则贴边")));
@@ -447,7 +445,6 @@ namespace MPlot
             c.ColorMode = (ColorMode)Math.Max(0, _colorMode.SelectedIndex);
             c.PlotWithPlotStyles = _styles.Checked; c.PlotWithLineweights = _lw.Checked;
             c.PlotCentered = _center.Checked; c.RotateToBestFit = _rot.Checked;
-            c.PreviewBeforePrint = _preview.Checked;
             c.PlotOffsetX = (double)_ox.Value; c.PlotOffsetY = (double)_oy.Value;
             c.WindowMarginMm = (double)_margin.Value;
             c.ScaleMode = (ScaleMode)_scale.SelectedIndex;
@@ -703,13 +700,23 @@ namespace MPlot
     }
 
     // ================================================================ 打印前预览
-    /// <summary>单张打印预览：清单里点某行的「预览」，按该行当前纸张/比例渲染一张图，大图查看。
-    /// 只看不导出，方便逐张核对打印效果（字会不会太小、内容有没有被裁）；关闭即删临时 PNG。</summary>
+    /// <summary>单张打印预览：清单里点某行的「预览」，按该行当前纸张/比例渲染一张图。
+    /// 可自由放大看：滚轮以鼠标为中心缩放（10%~800%），左键拖动平移，双击在
+    /// 「适合窗口」与「实际大小（100%）」之间切换；底部有放大/缩小/适合窗口/
+    /// 实际大小按钮与缩放百分比。只看不导出；关闭即删临时 PNG。</summary>
     public sealed class SingleSheetPreviewForm : Form
     {
         private readonly string _png;
+        private Image _img;
+        private double _zoom = 1.0;
+        private readonly Panel _canvas = new Panel
+        { Dock = DockStyle.Fill, AutoScroll = true, BackColor = Color.White, TabStop = true };
         private readonly PictureBox _pic = new PictureBox
-        { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.White };
+        { SizeMode = PictureBoxSizeMode.StretchImage, BackColor = Color.White };
+        private readonly Label _zoomLabel = new Label { AutoSize = true, TextAlign = ContentAlignment.MiddleLeft };
+        private bool _dragging;
+        private Point _dragStart;
+        private Point _scrollStart;
 
         public SingleSheetPreviewForm(string png, string caption)
         {
@@ -723,25 +730,148 @@ namespace MPlot
             try
             {
                 if (!string.IsNullOrEmpty(_png) && File.Exists(_png))
-                    _pic.Image = Image.FromFile(_png);
+                    _img = Image.FromFile(_png);
             }
             catch (Exception ex) { Logger.Verbose("预览图加载失败：" + ex.Message); }
+            if (_img != null) _pic.Image = _img;
+
             Label info = Ui.L(caption + "（所见即导出时的打印效果）", 0);
             info.Dock = DockStyle.Top;
             info.Height = 26;
             info.Padding = new Padding(8, 5, 8, 0);
-            Button close = Ui.B("关闭", delegate { Close(); }, 90);
+            if (_img == null) info.Text = caption + "（预览图加载失败）";
+
+            _canvas.Controls.Add(_pic);
+            _canvas.MouseWheel += Canvas_MouseWheel;
+            _canvas.MouseEnter += delegate { try { _canvas.Focus(); } catch { } };
+            _canvas.SizeChanged += delegate { LayoutPic(); };
+            _pic.MouseWheel += Canvas_MouseWheel;
+            _pic.MouseDown += Pic_MouseDown;
+            _pic.MouseMove += Pic_MouseMove;
+            _pic.MouseUp += Pic_MouseUp;
+            _pic.DoubleClick += delegate
+            {
+                if (_img == null) return;
+                if (Math.Abs(_zoom - 1.0) < 0.01) FitZoom();
+                else SetZoom(1.0, CenterOfCanvas());
+            };
+
             FlowLayoutPanel bottom = new FlowLayoutPanel
             { Dock = DockStyle.Bottom, Height = 46, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(6) };
-            bottom.Controls.Add(close);
-            Controls.Add(_pic);
+            bottom.Controls.Add(Ui.B("关闭", delegate { Close(); }, 90));
+            bottom.Controls.Add(Ui.B("实际大小 (100%)", delegate { SetZoom(1.0, CenterOfCanvas()); }, 130));
+            bottom.Controls.Add(Ui.B("适合窗口", delegate { FitZoom(); }, 90));
+            bottom.Controls.Add(Ui.B("缩小 (-)", delegate { SetZoom(_zoom / 1.25, CenterOfCanvas()); }, 80));
+            bottom.Controls.Add(Ui.B("放大 (+)", delegate { SetZoom(_zoom * 1.25, CenterOfCanvas()); }, 80));
+            bottom.Controls.Add(_zoomLabel);
+
+            Controls.Add(_canvas);
             Controls.Add(info);
             Controls.Add(bottom);
+            Shown += delegate { FitZoom(); };
+        }
+
+        private Point CenterOfCanvas()
+        {
+            return new Point(Math.Max(0, _canvas.ClientSize.Width / 2),
+                             Math.Max(0, _canvas.ClientSize.Height / 2));
+        }
+
+        /// <summary>以画布上某点为中心缩放（滚轮/按钮都走这里）；缩放后同一图像点仍在鼠标下。</summary>
+        private void SetZoom(double z, Point anchorCanvas)
+        {
+            if (_img == null) return;
+            z = Math.Max(0.1, Math.Min(8.0, z));
+            // 鼠标在图上的位置（图像像素坐标）：先换算到 _pic 坐标，再除以当前缩放
+            Point picMouse = new Point(anchorCanvas.X - _pic.Location.X,
+                                       anchorCanvas.Y - _pic.Location.Y);
+            double ix = picMouse.X / _zoom;
+            double iy = picMouse.Y / _zoom;
+            _zoom = z;
+            _pic.Size = new Size(
+                Math.Max(1, (int)Math.Round(_img.Width * _zoom)),
+                Math.Max(1, (int)Math.Round(_img.Height * _zoom)));
+            LayoutPic();
+            // 新的滚动偏移：让同一图像点回到鼠标下
+            int nx = (int)Math.Round(ix * _zoom + _pic.Location.X - anchorCanvas.X);
+            int ny = (int)Math.Round(iy * _zoom + _pic.Location.Y - anchorCanvas.Y);
+            _canvas.AutoScrollPosition = new Point(Math.Max(0, nx), Math.Max(0, ny));
+            UpdateZoomLabel();
+        }
+
+        /// <summary>适合窗口：整张图完整显示；图比窗口小时居中。</summary>
+        private void FitZoom()
+        {
+            if (_img == null) return;
+            double zx = (double)_canvas.ClientSize.Width / _img.Width;
+            double zy = (double)_canvas.ClientSize.Height / _img.Height;
+            double z = Math.Min(zx, zy);
+            if (z <= 0 || double.IsNaN(z) || double.IsInfinity(z)) z = 1.0;
+            z = Math.Max(0.05, Math.Min(8.0, z));
+            _zoom = z;
+            _pic.Size = new Size(
+                Math.Max(1, (int)Math.Round(_img.Width * _zoom)),
+                Math.Max(1, (int)Math.Round(_img.Height * _zoom)));
+            _canvas.AutoScrollPosition = new Point(0, 0);
+            UpdateZoomLabel();
+            LayoutPic();
+        }
+
+        private void UpdateZoomLabel()
+        {
+            if (_img == null) { _zoomLabel.Text = ""; return; }
+            _zoomLabel.Text = ((int)Math.Round(_zoom * 100)).ToString() + "%"
+                + "  (" + _img.Width + "×" + _img.Height + " 像素)";
+        }
+
+        /// <summary>图比窗口小时居中显示；图比窗口大时顶在左上角（靠滚动条看）。</summary>
+        private void LayoutPic()
+        {
+            if (_pic == null || _canvas == null) return;
+            int x = _pic.Width < _canvas.ClientSize.Width ? (_canvas.ClientSize.Width - _pic.Width) / 2 : 0;
+            int y = _pic.Height < _canvas.ClientSize.Height ? (_canvas.ClientSize.Height - _pic.Height) / 2 : 0;
+            _pic.Location = new Point(Math.Max(0, x), Math.Max(0, y));
+        }
+
+        private void Canvas_MouseWheel(object sender, MouseEventArgs e)
+        {
+            if (_img == null) return;
+            // 滚轮以鼠标为中心缩放：事件可能来自画布或图本身，统一换算到画布坐标
+            Control src = sender as Control;
+            Point anchor = src == _pic
+                ? new Point(e.X + _pic.Location.X, e.Y + _pic.Location.Y)
+                : new Point(e.X, e.Y);
+            double f = e.Delta > 0 ? 1.25 : 1.0 / 1.25;
+            SetZoom(_zoom * f, anchor);
+        }
+
+        private void Pic_MouseDown(object sender, MouseEventArgs e)
+        {
+            if (e.Button != MouseButtons.Left) return;
+            _dragging = true;
+            _dragStart = e.Location;
+            _scrollStart = _canvas.AutoScrollPosition;
+            _pic.Cursor = Cursors.SizeAll;
+        }
+
+        private void Pic_MouseMove(object sender, MouseEventArgs e)
+        {
+            if (!_dragging) return;
+            int nx = -_scrollStart.X - (e.X - _dragStart.X);
+            int ny = -_scrollStart.Y - (e.Y - _dragStart.Y);
+            _canvas.AutoScrollPosition = new Point(Math.Max(0, nx), Math.Max(0, ny));
+        }
+
+        private void Pic_MouseUp(object sender, MouseEventArgs e)
+        {
+            _dragging = false;
+            _pic.Cursor = Cursors.Default;
         }
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
             try { if (_pic.Image != null) { _pic.Image.Dispose(); _pic.Image = null; } } catch { }
+            try { if (_img != null) { _img.Dispose(); _img = null; } } catch { }
             try { if (!string.IsNullOrEmpty(_png) && File.Exists(_png)) File.Delete(_png); } catch { }
             base.OnFormClosed(e);
         }

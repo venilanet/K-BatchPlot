@@ -57,7 +57,7 @@ namespace MPlot
             ClientSize = new Size(1120, 700);
             MinimumSize = new Size(900, 560);
 
-            _hint = Ui.L("纸张列点下拉可单张改（A0/A1/A2/A3/A4/自定义）；比例列显示导出时真正用的比例（自动=实测÷纸张，改纸张即变；双击可填分母，清空=自动；1:200 以上标橙色，打印后文字可能偏小）；点每行的「预览」可看这张的打印效果；重复图号、重复文件名、空文件名会标红。\r\n「定位选中图纸」直接回图上看选中图框（可平移/缩放，按回车返回清单）；「点选图框」可在图上连续点选图框块追加进清单（回车结束，Esc 取消）；点「确认导出 PDF」前会自动检查文件名、图框、纸张与输出目录。", 900);
+            _hint = Ui.L("纸张列点下拉可单张改（A0/A1/A2/A3/A4/自定义）；比例列显示导出时真正用的比例（自动=实测÷纸张，改纸张即变并清回自动；双击可填分母锁定，清空=自动，顶部比例填 0 也可一键清回自动；1:200 以上标橙色，打印后文字可能偏小）；点每行的「预览」可看这张的打印效果（滚轮放大、拖动平移、双击切适合窗口/实际大小）；重复图号、重复文件名、空文件名会标红。\r\n「定位选中图纸」直接回图上看选中图框（可平移/缩放，按回车返回清单）；「点选图框」可在图上连续点选图框块追加进清单（回车结束，Esc 取消）；点「确认导出 PDF」前会自动检查文件名、图框、纸张与输出目录。", 900);
 
             _filter = Ui.D(new[] { "全部图纸", "重复图号", "重复文件名", "文件名为空", "异常图纸"}, 130, 0);
             _filter.SelectedIndexChanged += delegate { ApplyFilter();};
@@ -71,7 +71,7 @@ namespace MPlot
             _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
             _grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
             AddColumns();
-            _grid.CellEndEdit += delegate(object s, DataGridViewCellEventArgs e) { SyncRow(e.RowIndex);};
+            _grid.CellEndEdit += delegate(object s, DataGridViewCellEventArgs e) { OnCellEndEdit(e);};
             _grid.CellClick += delegate(object s, DataGridViewCellEventArgs e) { OnCellClick(e);};
             // 纸张下拉框选完立即提交（否则要等单元格失焦才触发 CellValueChanged）
             _grid.CurrentCellDirtyStateChanged += delegate(object s, EventArgs e)
@@ -219,6 +219,13 @@ namespace MPlot
         {
             if (s.Config != null && s.Config.ScaleDenominator > 0)
                 return s.Config.ScaleDenominator;
+            return EffectiveDenAuto(s);
+        }
+
+        /// <summary>自动分母（不看手动设置）：全局自定义用全局分母，自动模式按实测÷纸张算。
+        /// 供 SyncScaleCell 判断「用户填的值是不是就是自动值」用。</summary>
+        private double EffectiveDenAuto(SheetItem s)
+        {
             if (_cfg == null) return 0;
             if (_cfg.ScaleMode == ScaleMode.Custom)
                 return _cfg.CustomScaleDenominator > 0 ? _cfg.CustomScaleDenominator : 0;
@@ -423,6 +430,11 @@ namespace MPlot
                         HeightMm = s.HeightMm,
                         IsCustom = true
                     };
+                    // 改纸张，比例就跟回自动（与 ApplyPaperToSelected 同款规则）：
+                    // 手动分母清掉，否则 A0 改 A3 后比例还锁在 1:100，整张图打不下、
+                    // 只出局部（2026-11-19 真机反馈）。要锁定比例，改完纸张后再填分母。
+                    s.Config.ScaleNumerator = 0;
+                    s.Config.ScaleDenominator = 0;
                 }
                 else
                 {
@@ -431,27 +443,63 @@ namespace MPlot
                     {
                         if (s.Config == null) s.Config = new FrameEntry();
                         s.Config.Paper = ps;
+                        // 改纸张，比例就跟回自动（同上）。
+                        s.Config.ScaleNumerator = 0;
+                        s.Config.ScaleDenominator = 0;
                     }
                 }
             }
-            // 比例格接受「1:100」「1:100*」「100」，清空=自动
-            string denRaw = Cell(gr, C_DEN);
-            double den;
-            if (ParseDenCell(denRaw, out den))
-            {
-                if (s.Config == null) s.Config = new FrameEntry();
-                s.Config.ScaleNumerator = 1;
-                s.Config.ScaleDenominator = den;
-            }
-            else if (s.Config!= null)
-            {
-                s.Config.ScaleNumerator = 0;
-                s.Config.ScaleDenominator = 0;
-            }
+            // 注意：这里不读比例格。比例格显示的是自动算出来的“1:100”，
+            // 若 SyncRow 把它当成手填分母锁死，之后改纸张比例再也不跟——
+            // 预览、定位、点选等操作都会同步全行，全表比例会被一次锁死
+            // （2026-11-19 真机反馈：批量设 A3 后比例仍是 1:100* / 1:200*）。
+            // 比例只有用户真正双击改了才算手动，见 SyncScaleCell（只从 CellEndEdit 调）。
             // 实时刷新：重复标红、底部统计、确认按钮状态（不重新应用筛选，避免正在改的行突然被隐藏）
             MarkDuplicates();
             UpdateStat();
             UpdateConfirmButton();
+        }
+
+        /// <summary>比例格只有用户真正双击改了才算手动（只从 OnCellEndEdit 调，SyncRow 不调）。
+        /// 接受「1:100」「1:100*」「100」，清空=自动；填的值与自动算出的分母相同
+        /// 时恢复自动（不锁死——否则只是打开格子看一眼也会把自动比例锁成手动）。</summary>
+        private void SyncScaleCell(int row)
+        {
+            if (row < 0 || row >= _items.Count || row >= _grid.Rows.Count) return;
+            SheetItem s = _items[row];
+            string denRaw = Cell(_grid.Rows[row], C_DEN);
+            double den;
+            if (ParseDenCell(denRaw, out den))
+            {
+                double autoDen = EffectiveDenAuto(s);
+                if (autoDen > 0 && Math.Abs(den - autoDen) < 0.001)
+                {
+                    // 填的值就是自动值，恢复自动，不锁死
+                    if (s.Config != null) { s.Config.ScaleNumerator = 0; s.Config.ScaleDenominator = 0; }
+                }
+                else
+                {
+                    if (s.Config == null) s.Config = new FrameEntry();
+                    s.Config.ScaleNumerator = 1;
+                    s.Config.ScaleDenominator = den;
+                }
+            }
+            else if (s.Config != null)
+            {
+                s.Config.ScaleNumerator = 0;
+                s.Config.ScaleDenominator = 0;
+            }
+            RefreshGrid();
+            if (row >= 0 && row < _grid.Rows.Count) _grid.Rows[row].Selected = true;
+        }
+
+        /// <summary>单元格编辑结束：先同步整行；只有比例格是用户真正改了才按手动处理
+        /// （SyncRow 不读比例格，见 SyncScaleCell）。</summary>
+        private void OnCellEndEdit(DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.RowIndex >= _items.Count) return;
+            SyncRow(e.RowIndex);
+            if (e.ColumnIndex == C_DEN) SyncScaleCell(e.RowIndex);
         }
 
         private static string Cell(DataGridViewRow r, int c)
@@ -553,6 +601,11 @@ namespace MPlot
                     };
                 else
                     _items[i].Config.Paper = ps;
+                // 改纸张，比例就跟回自动：手动分母清掉，否则 A0 改 A3 后比例还锁在
+                // 1:100，整张图打不下、只出局部（2026-11-19 真机反馈：A0→A3 只打了局部）。
+                // 要锁定比例，改完纸张后再在比例格里填分母（或顶部「应用比例」）。
+                _items[i].Config.ScaleNumerator = 0;
+                _items[i].Config.ScaleDenominator = 0;
                 // 文件名里的「图框大小」取自纸张：改纸张必须同步重算文件名，
                 // 否则纸张列变了、文件名还留着旧的 _自定义（2026-11-19 真机反馈）。
                 _items[i].FileStem = Naming.BuildFileName(_items[i], _cfg, i + 1);
@@ -565,13 +618,32 @@ namespace MPlot
             List<int> idx = TargetIndices();
             if (idx.Count == 0) { Ui.Warn("清单为空"); return;}
             double den;
-            if (!double.TryParse(_den.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out den) || den <= 0)
-            { Ui.Warn("比例分母请填大于 0 的数字，例如 100"); return;}
+            if (!double.TryParse(_den.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out den) || den < 0)
+            { Ui.Warn("比例分母请填大于等于 0 的数字，例如 100；填 0 = 清回自动"); return;}
             foreach (int i in idx)
             {
                 if (_items[i].Config == null) _items[i].Config = new FrameEntry();
-                _items[i].Config.ScaleNumerator = 1;
-                _items[i].Config.ScaleDenominator = den;
+                // 填 0 = 清回自动（解锁被锁死的行）；填正数 = 锁定手动比例
+                if (den == 0)
+                {
+                    _items[i].Config.ScaleNumerator = 0;
+                    _items[i].Config.ScaleDenominator = 0;
+                }
+                else
+                {
+                    // 与自动值相同就不锁（见 SyncScaleCell 的同款规则），否则只是打开看一眼也会锁死
+                    double autoDen = EffectiveDenAuto(_items[i]);
+                    if (autoDen > 0 && Math.Abs(den - autoDen) < 0.001)
+                    {
+                        _items[i].Config.ScaleNumerator = 0;
+                        _items[i].Config.ScaleDenominator = 0;
+                    }
+                    else
+                    {
+                        _items[i].Config.ScaleNumerator = 1;
+                        _items[i].Config.ScaleDenominator = den;
+                    }
+                }
             }
             RefreshGrid();
         }

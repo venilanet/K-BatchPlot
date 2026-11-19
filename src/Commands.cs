@@ -31,34 +31,10 @@ namespace MPlot
                 AcadUtil.EnsureMenuBarVisible();
                 bool menu = MenuBuilder.EnsureMenu();
 
-                // 导出前预览闸门：由 BatchEngine 在真正出图前回调，用同一套 PlotRequest 渲染。
-                // 预览窗口打不开时不静默继续导出：请用户选重试 / 直接导出 / 取消。
-                BatchEngine.PreviewHook = delegate(List<PlotRequest> reqs, List<SheetItem> sheets, string project)
-                {
-                    while (true)
-                    {
-                        try
-                        {
-                            using (PrintPreviewForm f = new PrintPreviewForm(reqs, sheets, project))
-                            {
-                                Commands.ShowForm(f);
-                                BatchEngine.PreviewFailedLabels = new List<string>(f.FailedLabels);
-                                return f.Decision;
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Logger.Warn("预览窗口异常：" + ex.Message);
-                            DialogResult r = MessageBox.Show(
-                                "导出预览窗口打开失败：" + ex.Message
-                                + "\r\n\r\n是 = 重试，再打开一次预览；\r\n否 = 不检查预览、明确确认后直接导出；\r\n取消 = 取消本次任务，不生成 PDF。",
-                                "导出前预览", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
-                            if (r == DialogResult.Yes) continue;
-                            if (r == DialogResult.No) return PreviewDecision.ContinueWithoutPreview;
-                            return PreviewDecision.Canceled;
-                        }
-                    }
-                };
+                // 导出前整批预览闸门已撤（2026-11-19）：清单里每行点「预览」已能逐张核对，
+                // 导出前再整批渲染是多余的，还拖时间。BatchEngine.PreviewHook 保持未注册
+                // （null），导出跳过整批预览、预检通过后直接出图。PrintPreviewForm 与
+                // PreviewHook 机制保留，想恢复整批预览时重新注册钩子即可。
 
                 // 有些单位用精简 CUI / 权限受限，Initialize 阶段 COM 菜单接口还没就绪，
                 // 首次创建会失败。切图纸时重试一次；再挂一个 Idle 兜底，保证「装完重启就有菜单」。
