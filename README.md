@@ -363,7 +363,7 @@ MPlot/
 
 ---
 
-## 11. 故障速查
+## 11. 故障速查（安装失败怎么办）
 
 | 现象 | 先看哪里 |
 |---|---|
@@ -383,4 +383,4 @@ MPlot/
 
 插件只读当前 DWG 与本机打印配置，不访问网络、不上传数据、不修改图纸已有对象（唯一写入是你勾选后新建的目录 TABLE）。配置与日志都在 `%APPDATA%\MPlot\`。插件不设授权锁，装好即用；项目信息在图框信息库「其它」页登记。
 
-安装器只写入 `ApplicationPlugins\MPlot.bundle`、本工程目录（`build\` / `install.log`），以及用户目录安装时**追加**当前用户 CAD 配置的 `TRUSTEDPATHS`（原值写进 `install.log`，可回滚）；覆盖旧版本前先完整备份，卸载只改名不删除。
+安装器只写入 `ApplicationPlugins\MPlot.bundle`、本工程目录（`build\` / `install.log`），以及用户目录安装时**追加**当前用户 CAD 配置的 `TRUSTEDPATHS`（原值写进 `install.log`，可回滚）；覆盖旧版本前先完整备份，卸载只改名不删除。不要手工拿 `build\MPlot.dll`——它是 e0cf2ac 的旧版，安装器每次都会重新编译覆盖；手工部署请用安装器。

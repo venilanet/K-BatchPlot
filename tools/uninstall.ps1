@@ -30,6 +30,7 @@ if ($ans -ne 'Y' -and $ans -ne 'y') {
 
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $okCount = 0
+$failCount = 0
 foreach ($t in $Targets) {
     $dest = Join-Path (Split-Path -Parent $t) ('MPlot.bundle.disabled-' + $stamp)
     try {
@@ -41,6 +42,7 @@ foreach ($t in $Targets) {
         Write-Host ('  [X] 停用失败：' + $t) -ForegroundColor Red
         Write-Host ('      ' + $_.Exception.Message) -ForegroundColor DarkGray
         Write-Host '      若是权限不足：请先关闭 AutoCAD/天正，再右键「卸载.bat」→ 以管理员身份运行。' -ForegroundColor Yellow
+        $failCount++
     }
 }
 
@@ -49,5 +51,10 @@ if ($okCount -gt 0) {
     Write-Host '  下次启动 AutoCAD / 天正时不会再加载「K-批量打印」。' -ForegroundColor Green
 }
 Write-Host '  想彻底删除：关闭 CAD 后，在资源管理器里手动删除改名后的目录即可。' -ForegroundColor DarkGray
+# L3：本脚本只改名，不清 TRUSTEDPATHS 里的条目、不删按需加载键、不清 CUI 菜单。
+# 如需彻底清理，请在 CAD 里运行 MP_UNINSTALL，或手工清理上述残留项。
+Write-Host '  注意：受信任位置（TRUSTEDPATHS）里的条目与 CUI 里的菜单本脚本未清理；' -ForegroundColor DarkGray
+Write-Host '        彻底清理请在 CAD 里运行 MP_UNINSTALL。' -ForegroundColor DarkGray
 Write-Host ''
+if ($failCount -gt 0) { exit 1 }
 exit 0

@@ -140,6 +140,7 @@ Write-Host '=== 1. 应用程序入口 ===' -ForegroundColor Yellow
 Check 'Autodesk.AutoCAD.ApplicationServices.Application' @('AcadApplication','MenuGroups','MenuBar','LoadPartialMenu','ShowModalDialog','ShowModelessDialog')
 Check 'Autodesk.AutoCAD.ApplicationServices.Core.Application' @('DocumentManager','SetSystemVariable','GetSystemVariable','Idle')
 Check 'Autodesk.AutoCAD.ApplicationServices.DocumentCollection' @('MdiActiveDocument','DocumentActivated','add_DocumentActivated')
+Check 'Autodesk.AutoCAD.ApplicationServices.Document' @('Name')
 
 Write-Host ''
 Write-Host '=== 2. 打印核心 ===' -ForegroundColor Yellow
@@ -162,13 +163,14 @@ Check 'Autodesk.AutoCAD.PlottingServices.PlotProgressDialog' @('.ctor','IsVisibl
 Write-Host ''
 Write-Host '=== 3. 图框 / 属性 / 表格 ===' -ForegroundColor Yellow
 Check 'Autodesk.AutoCAD.DatabaseServices.BlockReference' @('Name','DynamicBlockTableRecord','BlockTableRecord','IsDynamicBlock','AttributeCollection','Position','Rotation','ScaleFactors','BlockTransform','Bounds','DynamicBlockReferencePropertyCollection')
+Check 'Autodesk.AutoCAD.DatabaseServices.BlockTableRecord' @('ModelSpace')
 Check 'Autodesk.AutoCAD.DatabaseServices.Entity' @('GeometricExtents')
 Check 'Autodesk.AutoCAD.DatabaseServices.DynamicBlockReferencePropertyCollection' @('Count','GetEnumerator')
 Check 'Autodesk.AutoCAD.DatabaseServices.DynamicBlockReferenceProperty' @('Name','Value')
 Check 'Autodesk.AutoCAD.DatabaseServices.AttributeReference' @('Tag','TextString','Position','Height','Rotation','Justify','IsMTextAttribute','Invisible')
 Check 'Autodesk.AutoCAD.DatabaseServices.AttributeCollection' @('Count','GetEnumerator')
 Check 'Autodesk.AutoCAD.DatabaseServices.Table' @('.ctor','InsertRows','Cells','SetTextString','SetRowHeight','SetColumnWidth','Position','Dispose')
-Check 'Autodesk.AutoCAD.DatabaseServices.ObjectId' @('IsNull','IsErased','IsValid','ObjectClass')
+Check 'Autodesk.AutoCAD.DatabaseServices.ObjectId' @('IsNull','IsErased','IsValid','ObjectClass','Null')
 Check 'Autodesk.AutoCAD.DatabaseServices.Database' @('TransactionManager','CurrentSpaceId','BlockTableId','LayerTableId','Dispose')
 
 Write-Host ''
@@ -176,6 +178,9 @@ Write-Host '=== 4. 编辑器 / 交互 ===' -ForegroundColor Yellow
 Check 'Autodesk.AutoCAD.EditorInput.Editor' @('WriteMessage','GetPoint','GetCorner','SelectCrossingWindow','SelectWindow','SelectAll','GetSelection','GetEntity','SetImpliedSelection','GetString','ZoomWindow','UpdateScreen','GetCurrentView','SetCurrentView','Document')
 Check 'Autodesk.AutoCAD.EditorInput.PromptSelectionResult' @('Status','Value')
 Check 'Autodesk.AutoCAD.EditorInput.SelectionFilter' @('.ctor')
+# 几何静态成员（BlockPicker / AcadUtil 用到，2026-11-19 审计补入）
+Check 'Autodesk.AutoCAD.Geometry.Matrix3d' @('Identity')
+Check 'Autodesk.AutoCAD.Geometry.Point3d' @('Origin')
 
 Write-Host ''
 Write-Host '=== 5. 枚举 / 辅助信息 ===' -ForegroundColor Yellow

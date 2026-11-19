@@ -1,6 +1,10 @@
 # ---- 本机安装/构建日志（含作者本机绝对路径，不属于源码）----
 install.log
 
+# ---- 编译产物：安装器每次现场重新编译，build/ 下的 DLL 不入库、不手工拿 ----
+# 注意：build/MPlot.dll 是 e0cf2ac 的旧版，已入库（历史原因），不要手工拿它部署。
+build/
+
 # ---- 自检临时产物（PDF / exe 由 run.ps1 现场生成）----
 tools/selftest/_work/
 

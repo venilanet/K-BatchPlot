@@ -403,7 +403,7 @@ namespace MPlot
                 DialogResult r = MessageBox.Show(
                     "确定要一键卸载「K-批量打印」吗？\n\n"
                     + "将执行：移除顶部菜单；停用自动加载（下次启动 CAD 不再加载）；\n"
-                    + "清理受信任位置与按需加载注册表项；主程序 DLL 安排在下次开机时删除。\n"
+                    + "清理受信任位置；按需加载注册表项只清理属于本插件的；主程序 DLL 安排在下次开机时删除。\n"
                     + "图框库、设置与日志（%APPDATA%\\MPlot）会保留，重装后可继续用。\n"
                     + "本次 CAD 会话里命令仍可用，关闭 CAD 后彻底生效。",
                     "一键卸载 K-批量打印", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);

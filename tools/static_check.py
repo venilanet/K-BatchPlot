@@ -172,17 +172,27 @@ def check_acad2014(code_map, raw_map):
 # 同文件整段 using 两者、又不给 FlowDirection 加别名时，任何一处裸 FlowDirection 都会编译失败。
 # 修法：DatabaseServices 只用别名逐个引（Extents2d / ObjectId，如 FrameBatchForm.cs），
 # 或加 using FlowDirection = System.Windows.Forms.FlowDirection;（FrameLibraryForm.cs 的做法）。
+# 同理另两组已知冲突：Application（WinForms vs ApplicationServices）、
+# Exception（System vs Autodesk.AutoCAD.Runtime，Commands.cs 已起别名）。
+AMBIGUITY_PAIRS = [
+    ("System.Windows.Forms", "Autodesk.AutoCAD.DatabaseServices", "FlowDirection"),
+    ("System.Windows.Forms", "Autodesk.AutoCAD.ApplicationServices", "Application"),
+    ("System", "Autodesk.AutoCAD.Runtime", "Exception"),
+]
+
+
 def check_flowdirection(code_map):
     issues = []
     for rel, code in code_map.items():
-        bare_db = re.search(r'^\s*using\s+Autodesk\.AutoCAD\.DatabaseServices\s*;', code, re.M)
-        winforms = re.search(r'^\s*using\s+System\.Windows\.Forms\s*;', code, re.M)
-        alias = re.search(r'^\s*using\s+FlowDirection\s*=', code, re.M)
-        if bare_db and winforms and not alias:
-            for m in re.finditer(r'(?<![\w.])FlowDirection(?![\w])', code):
-                line = code.count("\n", 0, m.start()) + 1
-                issues.append("%s:%d  FlowDirection 二义性（CS0104）：同文件整段 using WinForms 与 DatabaseServices，又未加 FlowDirection 别名 -> DatabaseServices 只用别名逐个引，或加 using FlowDirection = System.Windows.Forms.FlowDirection;" % (rel, line))
-                break  # 每文件只报一次
+        for ns1, ns2, t in AMBIGUITY_PAIRS:
+            bare1 = re.search(r'^\s*using\s+' + re.escape(ns1) + r'\s*;', code, re.M)
+            bare2 = re.search(r'^\s*using\s+' + re.escape(ns2) + r'\s*;', code, re.M)
+            alias = re.search(r'^\s*using\s+' + re.escape(t) + r'\s*=', code, re.M)
+            if bare1 and bare2 and not alias:
+                for m in re.finditer(r'(?<![\w.])' + re.escape(t) + r'(?![\w])', code):
+                    line = code.count("\n", 0, m.start()) + 1
+                    issues.append("%s:%d  %s 二义性（CS0104）：同文件整段 using %s 与 %s，又未加 %s 别名 -> 其中一个命名空间只用别名逐个引，或加 using %s = %s.%s;" % (rel, line, t, ns1, ns2, t, t, ns1, t))
+                    break  # 每文件每组只报一次
     return issues
 
 
@@ -191,22 +201,32 @@ def check_flowdirection(code_map):
 # 只认最稳妥的几种类型位置（new T( / T.静态成员 / catch (T / is|as T / typeof(T / : T 继承 / [T 特性 / T< 泛型），
 # 属性名、方法名、枚举成员名（如 Label、Match、Color）不会误报；Padding 在 WinForms 不在 Drawing。
 USING_RULES = [
-    ("System.Text", ["Encoding", "StringBuilder", "Decoder", "Encoder"]),
-    ("System.Text.RegularExpressions", ["Regex", "Match", "MatchCollection", "Group"]),
+    ("System.Text", ["Encoding", "StringBuilder", "Decoder", "Encoder", "UTF8Encoding"]),
+    ("System.Text.RegularExpressions", ["Regex", "Match", "MatchCollection", "Group", "RegexOptions"]),
     ("System.Globalization", ["CultureInfo", "NumberStyles", "DateTimeFormatInfo"]),
-    ("System.IO", ["File", "Directory", "Path", "FileStream", "StreamReader", "StreamWriter", "IOException", "FileInfo", "DirectoryInfo", "MemoryStream"]),
+    ("System.IO", ["File", "Directory", "Path", "FileStream", "StreamReader", "StreamWriter", "IOException", "FileInfo", "DirectoryInfo", "MemoryStream", "FileAccess", "FileMode", "FileShare", "SeekOrigin", "SearchOption"]),
     ("System.Threading", ["Thread", "ThreadStart", "ManualResetEvent", "AutoResetEvent", "Mutex"]),
-    ("System.Reflection", ["Assembly", "MethodInfo", "BindingFlags", "PropertyInfo", "Type"]),
-    ("System.Collections", ["ArrayList", "Hashtable", "Queue", "Stack"]),
-    ("System.Collections.Generic", ["List", "Dictionary", "HashSet", "IEnumerable", "IList", "ICollection", "KeyValuePair", "Queue", "Stack"]),
+    ("System.Reflection", ["Assembly", "MethodInfo", "BindingFlags", "PropertyInfo", "Type", "EventInfo"]),
+    ("System.Collections", ["ArrayList", "Hashtable", "Queue", "Stack", "IComparer", "IDictionary", "DictionaryEntry"]),
+    ("System.Collections.Generic", ["List", "Dictionary", "HashSet", "IEnumerable", "IList", "ICollection", "KeyValuePair", "Queue", "Stack", "IComparer", "IDictionary"]),
     ("System.Collections.Specialized", ["StringCollection", "NameValueCollection", "StringDictionary"]),
-    ("System.Runtime.InteropServices", ["DllImport", "Marshal", "StructLayout", "GCHandle", "Guid"]),
-    ("System.Diagnostics", ["Process", "Stopwatch", "Debug", "Trace"]),
-    ("System.Windows.Forms", ["MessageBox", "Form", "Button", "TextBox", "ComboBox", "CheckBox", "Label", "DataGridView", "FlowLayoutPanel", "Panel", "DialogResult", "OpenFileDialog", "SaveFileDialog", "FolderBrowserDialog", "ToolTip", "Padding", "DockStyle", "AnchorStyles", "DataGridViewCellStyle", "FormStartPosition", "FormBorderStyle", "Keys"]),
+    ("System.Runtime.InteropServices", ["DllImport", "Marshal", "StructLayout", "GCHandle", "Guid", "CharSet", "CallingConvention"]),
+    ("System.Diagnostics", ["Process", "Stopwatch", "Debug", "Trace", "ProcessStartInfo"]),
+    ("Microsoft.Win32", ["Registry", "RegistryKey"]),
+    ("System.Windows.Forms", ["MessageBox", "Form", "Button", "TextBox", "ComboBox", "CheckBox", "Label", "DataGridView", "FlowLayoutPanel", "Panel", "DialogResult", "OpenFileDialog", "SaveFileDialog", "FolderBrowserDialog", "ToolTip", "Padding", "DockStyle", "AnchorStyles", "DataGridViewCellStyle", "FormStartPosition", "FormBorderStyle", "Keys", "FlowDirection", "Application", "MessageBoxButtons", "MessageBoxIcon", "Control", "Cursors", "GroupBox", "NumericUpDown", "PictureBox", "TabControl", "TabPage", "TableLayoutPanel", "ListBox", "ProgressBar", "ComboBoxStyle", "FlatStyle", "BorderStyle", "AutoSizeMode", "ScrollBars", "DataGridViewAutoSizeColumnsMode", "DataGridViewCellEventArgs", "DataGridViewRow", "DataGridViewSelectionMode", "EventHandler", "FormClosedEventArgs", "ColumnStyle", "RowStyle", "SizeType", "SystemColors", "MessageBoxDefaultButton", "DataGridViewButtonColumn", "DataGridViewCell", "DataGridViewRowPostPaintEventArgs", "DataGridViewCheckBoxColumn", "DataGridViewColumnSortMode", "DataGridViewComboBoxColumn", "DataGridViewTextBoxColumn"]),
     ("System.Drawing", ["Color", "Font", "Size", "Point", "Bitmap", "Image", "Graphics", "Icon", "Rectangle"]),
-    ("System", ["String", "Math", "DateTime", "Guid", "IDisposable", "EventArgs", "Exception", "Action", "Func", "Random", "Convert", "Environment", "Console", "TimeSpan", "Version", "Uri", "Array", "Enum", "Object"]),
+    ("System", ["String", "Math", "DateTime", "Guid", "IDisposable", "EventArgs", "Exception", "Action", "Func", "Random", "Convert", "Environment", "Console", "TimeSpan", "Version", "Uri", "Array", "Enum", "Object", "StringComparison", "StringComparer", "StringSplitOptions", "Tuple", "IComparer", "IDictionary", "DictionaryEntry", "Nullable", "Activator", "FormatException", "InvalidDataException", "IntPtr", "Delegate", "EventInfo"]),
+    # Autodesk（归属以 verify_acad_api.ps1 的真反射核对为准：
+    # PlotSettings / PlotSettingsValidator 属于 DatabaseServices，不是 PlottingServices；
+    # 2026-11-19 审计曾误判为缺 PlottingServices，已用 e0cf2ac 真机编译过的事实纠正）。
+    ("Autodesk.AutoCAD.DatabaseServices", ["ObjectId", "ObjectIdCollection", "Transaction", "TransactionManager", "Database", "BlockReference", "BlockTable", "BlockTableRecord", "AttributeReference", "AttributeDefinition", "DBText", "MText", "DBPoint", "Line", "Polyline", "Polyline2d", "Circle", "Arc", "Ellipse", "Entity", "DBObject", "OpenMode", "Extents2d", "Extents3d", "PlotType", "PlotPaperUnit", "Layout", "LayoutManager", "LayerTable", "LayerTableRecord", "TextStyleTable", "DimStyleTable", "Viewport", "ViewTableRecord", "Tolerance", "Handle", "RXObject", "RXClass", "SymbolTable", "SymbolTableRecord", "Hatch", "Dimension", "Spline", "Region", "Solid3d", "SubentityId", "FullSubentityPath", "BlockBegin", "Mline", "Face", "DBDictionary", "Xrecord", "PlotSettings", "PlotSettingsValidator", "DxfCode", "ResultBuffer", "AttributeCollection", "DBDictionaryEntry", "DynamicBlockReferenceProperty", "DynamicBlockReferencePropertyCollection", "Table", "Cell", "CustomScale", "StdScaleType", "PlotRotation"]),
+    ("Autodesk.AutoCAD.EditorInput", ["Editor", "PromptSelectionOptions", "PromptSelectionResult", "PromptStatus", "PromptEntityOptions", "PromptEntityResult", "PromptStringOptions", "PromptStringResult", "PromptIntegerOptions", "PromptIntegerResult", "PromptDoubleOptions", "PromptDoubleResult", "PromptKeywordOptions", "PromptPointOptions", "PromptPointResult", "SelectionSet", "SelectionFilter", "TypedValue", "PromptNestedEntityOptions", "PromptNestedEntityResult", "PromptAngleOptions", "PromptDistanceOptions", "DragStatus", "SelectedObject", "PromptCornerOptions"]),
+    ("Autodesk.AutoCAD.Geometry", ["Point2d", "Point3d", "Vector2d", "Vector3d", "Matrix2d", "Matrix3d", "Scale3d", "LineSegment2d", "LineSegment3d", "Plane", "Tolerance", "Interval", "CircularArc2d", "CircularArc3d", "Curve3d"]),
+    ("Autodesk.AutoCAD.PlottingServices", ["PlotFactory", "PlotEngine", "PlotInfo", "PlotInfoValidator", "PlotPageInfo", "PlotProgressDialog", "MatchingPolicy", "PlotConfigManager", "PlotConfig"]),
+    ("Autodesk.AutoCAD.ApplicationServices", ["Application", "Document", "DocumentCollection", "DocumentManager", "DocumentEventArgs"]),
+    ("Autodesk.AutoCAD.Runtime", ["Exception", "RXObject", "CommandMethodAttribute", "CommandClassAttribute", "ExtensionApplicationAttribute", "LispFunctionAttribute", "ErrorStatus", "Interop", "CommandMethod", "CommandClass", "ExtensionApplication", "IExtensionApplication"]),
 ]
-GENERIC_TYPES = {"List", "Dictionary", "HashSet", "IEnumerable", "IList", "ICollection", "KeyValuePair", "Queue", "Stack"}
+GENERIC_TYPES = {"List", "Dictionary", "HashSet", "IEnumerable", "IList", "ICollection", "KeyValuePair", "Queue", "Stack", "IComparer", "IDictionary", "Nullable", "Func", "Action"}
 
 
 def _type_used(code, t):
@@ -657,6 +677,123 @@ def check_behavior(raw_map):
     return checks, issues
 
 
+# ------------------------------------------------------------------ 安装/卸载一致性
+# 2026-11-19 安装链路审计的防回退规则（H1/H2/H3/H4/M5/L2/L3/L6/L7/L8/L9/L1）。
+# 全是 grep 级不变量：模拟不了真机安装，但能拦住“改一处忘一处”的闭环断裂。
+# 真机行为仍以 docs/交付自查清单.md 里的 V1-V5 为准。
+def check_installer():
+    checks, issues = [], []
+
+    def read(rel):
+        p = os.path.join(ROOT, rel)
+        return open(p, encoding="utf-8-sig").read() if os.path.isfile(p) else ""
+
+    inst = read("tools/install.ps1")
+    uninst = read("tools/uninstall.ps1")
+    cs = read("src/Uninstaller.cs")
+    readme = read("README.md")
+
+    # H1：安装写 TRUSTEDPATHS 的键，与卸载清的键，必须都覆盖 Variables 与 General；
+    # 安装写的值（bundle 目录）与卸载匹配的值（bundle 目录 + 父目录）必须对应。
+    if "PSChildName -eq 'Variables'" in inst and "PSChildName -eq 'General'" in inst:
+        checks.append("安装器 TRUSTEDPATHS 写入覆盖 Variables 与 General 两个键")
+    else:
+        issues.append("H1 回退：安装器 TRUSTEDPATHS 写入未覆盖 Variables/General 两个键")
+    if '"Variables"' in cs and '"General"' in cs and "targets" in cs:
+        checks.append("卸载器 TRUSTEDPATHS 清理覆盖 Variables/General 两个键、bundle 目录与父目录两个值")
+    else:
+        issues.append("H1 回退：卸载器 CleanTrustedPaths 未覆盖两个键/两个值")
+    if "$trustedRoot = $Target" in inst:
+        checks.append("安装器 TRUSTEDPATHS 值用 bundle 目录本身（精确）")
+    else:
+        issues.append("H1 回退：安装器 TRUSTEDPATHS 值不是 bundle 目录（$trustedRoot 应为 $Target）")
+
+    # H2：部署前必须检查另一位置的同名 bundle。
+    if "另一位置已存在同名 MPlot.bundle" in inst:
+        checks.append("部署前检查另一 ApplicationPlugins 位置的同名 MPlot.bundle，发现即询问")
+    else:
+        issues.append("H2 回退：安装器部署前未检查另一位置的同名 MPlot.bundle")
+
+    # H3：读不到版本绝不能默认按 2024；多版本时必须问用户。
+    if "$major = 24" in inst:
+        issues.append("H3 回退：安装器读不到版本号时仍默认按 2024")
+    else:
+        checks.append("安装器读不到版本号时直接中止，不猜版本")
+    if "选哪个版本安装" in inst:
+        checks.append("多版本共存时安装器列出版本请用户选择（默认 2014）")
+    else:
+        issues.append("H3 回退：安装器多版本共存时未询问用户")
+
+    # H4：编译失败必须打印全部 error 行，不再只打最后 30 行；Die 文案不得预设原因。
+    if "Select-Object -Last 30" in inst:
+        issues.append("H4 回退：编译失败仍只显示最后 30 行")
+    else:
+        checks.append("编译失败打印全部 error 行（两遍编译器）")
+    if "AutoCAD 版本与源码 API 不匹配" in inst:
+        issues.append("H4 回退：Die 文案仍预设编译失败原因是 API 不匹配")
+    else:
+        checks.append("编译失败 Die 文案不再预设原因，指向 install.log")
+
+    # M5：Die 文案指向的 README 节必须存在。
+    if "故障速查（安装失败怎么办）" in readme:
+        checks.append("README 第 11 节标题与安装器 Die 文案的指引一致")
+    else:
+        issues.append("M5 回退：README 无「故障速查（安装失败怎么办）」一节，安装器 Die 文案成死指引")
+
+    # L6：CHANGELOG.md 存在（安装器复制列表里有它）。
+    if os.path.isfile(os.path.join(ROOT, "CHANGELOG.md")):
+        checks.append("CHANGELOG.md 存在，安装器复制不再静默跳过")
+    else:
+        issues.append("L6 回退：仓库无 CHANGELOG.md")
+
+    # L2：提权分叉不得 exit 0。
+    if "exit 2" in inst:
+        checks.append("UAC 提权分叉 exit 2，不再让 bat 误报 [OK]")
+    else:
+        issues.append("L2 回退：安装器提权分叉仍 exit 0")
+
+    # L7：备份只保留最近 2 份。
+    if "MPlot.bundle.backup-" in inst and "Select-Object -Skip 2" in inst:
+        checks.append("旧 bundle 备份只保留最近 2 份")
+    else:
+        issues.append("L7 回退：备份保留上限缺失")
+
+    # L8：磁盘扫描不得只写死 C:-F:（回退行里保留该字面量是允许的）。
+    if "DriveInfo]::GetDrives" in inst and "foreach ($drv in @('C:', 'D:', 'E:', 'F:'))" not in inst:
+        checks.append("Find-Acad 磁盘扫描枚举全部固定盘符")
+    else:
+        issues.append("L8 回退：Find-Acad 磁盘扫描仍只覆盖 C:-F:")
+
+    # L3：uninstall.ps1 失败时不得 exit 0，且须提示残留。
+    if "exit 1" in uninst and "TRUSTEDPATHS" in uninst:
+        checks.append("uninstall.ps1 失败 exit 1 且提示 TRUSTEDPATHS 等残留")
+    else:
+        issues.append("L3 回退：uninstall.ps1 失败仍 exit 0 或无残留提示")
+
+    # L1/L9：两个 bat 必须是纯 CRLF 行尾（Win7 教训），且显式调 64 位 powershell。
+    for bat in ("一键安装.bat", "卸载.bat"):
+        p = os.path.join(ROOT, bat)
+        if not os.path.isfile(p):
+            issues.append("缺失：" + bat)
+            continue
+        data = open(p, "rb").read()
+        crlf = data.count(b"\r\n")
+        lone = data.replace(b"\r\n", b"").count(b"\n")
+        if crlf > 0 and lone == 0:
+            checks.append(bat + " 为 CRLF 行尾（Win7 兼容）")
+        else:
+            issues.append("L1 回退：" + bat + " 不是纯 CRLF 行尾（CRLF=%d，孤立 LF=%d）" % (crlf, lone))
+        try:
+            text = data.decode("utf-8-sig")
+        except Exception:
+            text = ""
+        if "Sysnative" in text and "System32" in text:
+            checks.append(bat + " 显式调 64 位 powershell")
+        else:
+            issues.append("L9 回退：" + bat + " 未显式调 64 位 powershell")
+    return checks, issues
+
+
 def main():
     tree = ET.parse(CSPROJ)
     listed = sorted(e.attrib["Include"].replace("\\", "/") for e in tree.findall(".//m:Compile", NS))
@@ -726,13 +863,13 @@ def main():
     else:
         print("  未写回任何在 2014 上不存在 / 冲突的 API")
 
-    print("\n--- FlowDirection 二义性（CS0104）---")
+    print("\n--- 类型二义性（CS0104）---")
     fd = check_flowdirection(code_map)
     if fd:
         for e in fd:
             print("  [X] " + e)
     else:
-        print("  未发现 WinForms 与 DatabaseServices 的 FlowDirection 冲突")
+        print("  未发现已知的类型二义性冲突")
 
     print("\n--- 缺 using（CS0103）---")
     mu = check_usings(code_map)
@@ -803,7 +940,14 @@ def main():
     for i in w7_issues:
         print("  [X] " + i)
 
-    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues)
+    print("\n--- 安装/卸载一致性自检 ---")
+    inst_checks, inst_issues = check_installer()
+    for c in inst_checks:
+        print("  " + c)
+    for i in inst_issues:
+        print("  [X] " + i)
+
+    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
     print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")
