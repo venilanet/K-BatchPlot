@@ -96,6 +96,7 @@
     <Compile Include="Catalog.cs" />
     <Compile Include="BatchEngine.cs" />
     <Compile Include="MenuBuilder.cs" />
+    <Compile Include="Uninstaller.cs" />
     <Compile Include="Commands.cs" />
     <Compile Include="UI\Forms.cs" />
     <Compile Include="UI\FrameLibraryForm.cs" />

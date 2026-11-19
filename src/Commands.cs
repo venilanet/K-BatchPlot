@@ -95,7 +95,7 @@ namespace MPlot
         }
     }
 
-    /// <summary>菜单里的 3 项 + 1 个重建菜单命令（MP_MENU，不显示在菜单上）。所有入口都可用命令行直接调用。</summary>
+    /// <summary>菜单里的 4 项 + 1 个重建菜单命令（MP_MENU，不显示在菜单上）。所有入口都可用命令行直接调用。</summary>
     public static class Commands
     {
         // ---------------------------------------------------------------- 对话框工具
@@ -354,6 +354,26 @@ namespace MPlot
                                : "菜单创建失败，可直接输入 MP_GENERAL / MP_FRAME / MP_PRINTSET 使用。",
                             "K-批量打印", MessageBoxButtons.OK,
                             ok ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+        }
+
+        // ================================================================ 附：一键卸载
+        [CommandMethod("MP_UNINSTALL")]
+        public static void Uninstall()
+        {
+            try
+            {
+                DialogResult r = MessageBox.Show(
+                    "确定要一键卸载「K-批量打印」吗？\n\n"
+                    + "将执行：移除顶部菜单；停用自动加载（下次启动 CAD 不再加载）；\n"
+                    + "清理受信任位置与按需加载注册表项；主程序 DLL 安排在下次开机时删除。\n"
+                    + "图框库、设置与日志（%APPDATA%\\MPlot）会保留，重装后可继续用。\n"
+                    + "本次 CAD 会话里命令仍可用，关闭 CAD 后彻底生效。",
+                    "一键卸载 K-批量打印", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (r != DialogResult.Yes) return;
+                string report = Uninstaller.Uninstall();
+                MessageBox.Show(report, "一键卸载 K-批量打印", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex) { Logger.Error("一键卸载失败", ex); }
         }
     }
 }

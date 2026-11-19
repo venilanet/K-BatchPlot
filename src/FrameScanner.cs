@@ -219,8 +219,11 @@ namespace MPlot
                                         ? (dnAnchorManual ? "点选确认" : "自动定位")
                                         : (fc.HasDrawNoRegion ? "点选确认" : meta.Source);
                                     if (fromAnchor)
+                                    {
                                         meta.DrawNoPos = new Point3d(x0 + fc.DnAnchorX * fw,
                                                                      y0 + fc.DnAnchorY * fh, 0);
+                                        meta.DrawNoFrom = "锚点";
+                                    }
                                     else if (fc.HasDrawNoRegion)
                                         meta.DrawNoPos = null; // 区域打分猜的，位置不确定，不拿来学习锚点
                                 }
@@ -253,8 +256,11 @@ namespace MPlot
                                         ? (ttAnchorManual ? "点选确认" : "自动定位")
                                         : (fc.HasTitleRegion ? "点选确认" : meta.Source);
                                     if (fromAnchor)
+                                    {
                                         meta.TitlePos = new Point3d(x0 + fc.TtAnchorX * fw,
                                                                     y0 + fc.TtAnchorY * fh, 0);
+                                        meta.TitleFrom = "锚点";
+                                    }
                                     else if (fc.HasTitleRegion)
                                         meta.TitlePos = null;
                                 }
@@ -299,7 +305,9 @@ namespace MPlot
                             Title = meta.Title ?? "",
                             Rev = meta.Rev ?? "",
                             MetaSource = (meta.Source ?? "")
+                                + (!string.IsNullOrEmpty(meta.DrawNo) && !string.IsNullOrEmpty(meta.DrawNoFrom) ? "；图号←" + meta.DrawNoFrom : "")
                                 + (paperAuto ? "；纸张自动" : "")
+                                + (paperAuto ? "；实测" + ((int)Math.Round(wMm)).ToString() + "×" + ((int)Math.Round(hMm)).ToString() + "mm" : "")
                                 + ((meta.DrawNoPos.HasValue || meta.TitlePos.HasValue) ? "；位置自动" : ""),
                             PaperAutoDetected = paperAuto,
                             PosAutoDetected = meta.DrawNoPos.HasValue || meta.TitlePos.HasValue,
@@ -411,13 +419,13 @@ namespace MPlot
             catch { return ObjectId.Null; }
         }
 
-        /// <summary>库内纸张与实测尺寸是否一致（两边相对误差之和 &lt; 6% 算一致，含 90° 旋转）。</summary>
+        /// <summary>库内纸张与实测尺寸是否一致（两边相对误差之和 &lt; 10% 算一致，含 90° 旋转；与 Guess 吸附同阈）。</summary>
         private static bool PaperMatches(PaperSpec p, double wMm, double hMm)
         {
             if (p == null || p.WidthMm <= 0 || p.HeightMm <= 0 || wMm <= 0 || hMm <= 0) return false;
             double e1 = Math.Abs(p.WidthMm - wMm) / p.WidthMm + Math.Abs(p.HeightMm - hMm) / p.HeightMm;
             double e2 = Math.Abs(p.HeightMm - wMm) / p.HeightMm + Math.Abs(p.WidthMm - hMm) / p.WidthMm;
-            return Math.Min(e1, e2) < 0.06;
+            return Math.Min(e1, e2) < 0.10;
         }
 
         private static bool NeedsRotation(double wMm, double hMm, PaperSpec paper, bool enabled)
@@ -577,6 +585,7 @@ namespace MPlot
                             Rotated = NeedsRotation(w, h, f.Paper, cfg.RotateToBestFit),
                             DrawNo = meta.DrawNo ?? "", Title = meta.Title ?? "", Rev = meta.Rev ?? "",
                             MetaSource = (string.IsNullOrEmpty(meta.DrawNo + meta.Title) ? "" : "标题栏文字")
+                                + (!string.IsNullOrEmpty(meta.DrawNo) && !string.IsNullOrEmpty(meta.DrawNoFrom) ? "；图号←" + meta.DrawNoFrom : "")
                                 + ((meta.DrawNoPos.HasValue || meta.TitlePos.HasValue) ? "；位置自动" : ""),
                             PosAutoDetected = meta.DrawNoPos.HasValue || meta.TitlePos.HasValue,
                             Center = new Point3d((e.MinPoint.X + e.MaxPoint.X) / 2, (e.MinPoint.Y + e.MaxPoint.Y) / 2, 0)

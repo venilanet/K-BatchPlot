@@ -12,14 +12,14 @@ namespace MPlot
     }
 
     /// <summary>
-    /// 顶部菜单栏「K-批量打印」，按用户最终要求只保留 3 项：
-    ///   批打到文件 (通用型) / 批打到文件 (图框型) / 打印设置。不加分隔符、不加图标。
+    /// 顶部菜单栏「K-批量打印」，共 4 项：
+    ///   批打到文件 (通用型) / 批打到文件 (图框型) / 打印设置 / 一键卸载…。不加分隔符、不加图标。
     ///
     /// 为什么用 COM 的 dynamic 而不是生成 CUIX：
     ///   1) 老批打工具就是往当前菜单组 Add PopupMenu + InsertInMenuBar，行为一致；
     ///   2) 不需要引用 AcCui.dll，也不需要随包带一个二进制 .cuix，避开 AutoCAD 版本差异；
     ///   3) dynamic 走 IDispatch 后期绑定，Interop 类型库版本换了也不会编译失败。
-    /// 菜单若因权限/精简 CUI 配置创建失败，3 个命令仍可直接在命令行调用（MP_MENU 可重建菜单）。
+    /// 菜单若因权限/精简 CUI 配置创建失败，4 个命令仍可直接在命令行调用（MP_MENU 可重建菜单）。
     /// </summary>
     public static class MenuBuilder
     {
@@ -28,7 +28,8 @@ namespace MPlot
         public static readonly MenuItemDef[] Items = {
             new MenuItemDef("批打到文件 (通用型)",  "MP_GENERAL"),
             new MenuItemDef("批打到文件 (图框型)",  "MP_FRAME"),
-            new MenuItemDef("打印设置",             "MP_PRINTSET")
+            new MenuItemDef("打印设置",             "MP_PRINTSET"),
+            new MenuItemDef("一键卸载…",           "MP_UNINSTALL")
         };
 
         private static bool _ok;
@@ -151,6 +152,58 @@ namespace MPlot
         {
             _ok = false;
             return EnsureMenu();
+        }
+
+        /// <summary>
+        /// 一键卸载时从菜单栏与 ACAD 菜单组里彻底移除本插件的弹出菜单。
+        /// 先找对象、再统一删除，避免边遍历边删导致 COM 集合索引错位。
+        /// </summary>
+        public static bool RemoveMenu()
+        {
+            try
+            {
+                dynamic acad = AcApp.AcadApplication;
+                dynamic bar = acad.MenuBar;
+
+                object barPop = null;
+                ForEachComItem((object)bar, delegate(object o)
+                {
+                    try { if (barPop == null && SameTitle((string)((dynamic)o).Name)) barPop = o; } catch { }
+                });
+                if (barPop != null)
+                {
+                    try { ((dynamic)barPop).RemoveFromMenuBar(); } catch { }
+                }
+
+                dynamic group = null;
+                ForEachComItem((object)acad.MenuGroups, delegate(object o)
+                {
+                    dynamic g = o;
+                    if (group == null && string.Equals((string)g.Name, "ACAD", StringComparison.OrdinalIgnoreCase))
+                        group = o;
+                });
+                if (group == null) group = acad.MenuGroups.Item(0);
+                dynamic menus = group.Menus;
+
+                object menuPop = null;
+                ForEachComItem((object)menus, delegate(object o)
+                {
+                    try { if (menuPop == null && SameTitle((string)((dynamic)o).Name)) menuPop = o; } catch { }
+                });
+                if (menuPop != null)
+                {
+                    try { ((dynamic)menuPop).Delete(); } catch { }
+                }
+
+                _ok = false;
+                Logger.Info("菜单栏已移除：" + MenuTitle);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("菜单栏移除失败：" + ex.Message);
+                return false;
+            }
         }
 
         public static string CommandListText()

@@ -37,6 +37,9 @@ namespace MPlot
         public string Title { get; set; }
         public string Rev { get; set; }
         public string Source { get; set; }   // 属性 / 标题栏文字 / 空
+        /// <summary>图号 / 图名是从哪来的（属性[Tag] / 动态[Tag] / 定义[Tag] / 标题栏 / 锚点），供清单备注诊断用。</summary>
+        public string DrawNoFrom { get; set; }
+        public string TitleFrom { get; set; }
         /// <summary>图号 / 图名 / 版次文字在图中的实际位置（WCS），供「自动定位锚点」学习用；读不到时为 null。</summary>
         public Point3d? DrawNoPos { get; set; }
         public Point3d? TitlePos { get; set; }
@@ -380,6 +383,10 @@ namespace MPlot
             m.DrawNo = dn == null ? "" : dn.Value;
             m.Title = tt == null ? "" : tt.Value;
             m.Rev = rv == null ? "" : rv.Value;
+            m.DrawNoFrom = dn == null ? "" : (dn.FromDynamic ? "动态[" + dn.Tag + "]"
+                : (dn.FromDefinition ? "定义[" + dn.Tag + "]" : "属性[" + dn.Tag + "]"));
+            m.TitleFrom = tt == null ? "" : (tt.FromDynamic ? "动态[" + tt.Tag + "]"
+                : (tt.FromDefinition ? "定义[" + tt.Tag + "]" : "属性[" + tt.Tag + "]"));
             // 位置只记实例属性的（定义里的 Position 是块定义局部坐标，不能当 WCS 锚点）
             if (dn != null && !dn.FromDefinition) m.DrawNoPos = dn.Position;
             if (tt != null && !tt.FromDefinition) m.TitlePos = tt.Position;
@@ -388,14 +395,31 @@ namespace MPlot
                 m.Source = ((dn != null && dn.FromDynamic) || (tt != null && tt.FromDynamic) || (rv != null && rv.FromDynamic))
                     ? "动态块显示值" : "块属性";
 
-            bool empty = string.IsNullOrEmpty(m.DrawNo) && string.IsNullOrEmpty(m.Title);
-            if (empty && allowTextFallback && frameWcs.HasValue)
+            // 单字图号/图名基本不可能是真值（真图号如 D-XT1、真图名至少两字）：
+            // 丢弃后用标题栏文字重认，避免把 "J" 这类杂字当成图号进清单。
+            // 版次不在此列：版本号 "A" 本来就是单字。
+            bool badDn = !string.IsNullOrEmpty(m.DrawNo) && m.DrawNo.Trim().Length < 2;
+            bool badTt = !string.IsNullOrEmpty(m.Title) && m.Title.Trim().Length < 2;
+            if (badDn) { m.DrawNo = ""; m.DrawNoPos = null; m.DrawNoFrom = ""; }
+            if (badTt) { m.Title = ""; m.TitlePos = null; m.TitleFrom = ""; }
+
+            // 逐字段回退：只要有字段空着（或刚丢弃了单字杂值）就用标题栏文字补，只补空字段，不覆盖已读对的值。
+            bool needText = badDn || badTt
+                || (string.IsNullOrEmpty(m.DrawNo) && string.IsNullOrEmpty(m.Title));
+            if (needText && allowTextFallback && frameWcs.HasValue)
             {
                 SheetMeta fromText = ReadTitleBarTexts(frameWcs.Value, cfg);
-                if (!string.IsNullOrEmpty(fromText.DrawNo) || !string.IsNullOrEmpty(fromText.Title))
+                bool usedText = false;
+                if (string.IsNullOrEmpty(m.DrawNo) && !string.IsNullOrEmpty(fromText.DrawNo))
+                { m.DrawNo = fromText.DrawNo; m.DrawNoPos = fromText.DrawNoPos; m.DrawNoFrom = "标题栏"; usedText = true; }
+                if (string.IsNullOrEmpty(m.Title) && !string.IsNullOrEmpty(fromText.Title))
+                { m.Title = fromText.Title; m.TitlePos = fromText.TitlePos; m.TitleFrom = "标题栏"; usedText = true; }
+                if (string.IsNullOrEmpty(m.Rev) && !string.IsNullOrEmpty(fromText.Rev))
+                { m.Rev = fromText.Rev; m.RevPos = fromText.RevPos; usedText = true; }
+                if (usedText)
                 {
-                    m = fromText;
-                    m.Source = "标题栏文字";
+                    if (string.IsNullOrEmpty(m.Source)) m.Source = "标题栏文字";
+                    else if (m.Source != "标题栏文字") m.Source += "＋标题栏文字";
                 }
             }
             return m;
@@ -537,9 +561,9 @@ namespace MPlot
                 if (sr > bestRev && s != m.Title && s != m.DrawNo) { bestRev = sr; m.Rev = s; bestRevPos = t.Item2; }
             }
             if (bestTitle < 5) m.Title = "";
-            else m.TitlePos = bestTitlePos;
+            else { m.TitlePos = bestTitlePos; m.TitleFrom = "标题栏"; }
             if (bestNo < 5) m.DrawNo = "";
-            else m.DrawNoPos = bestNoPos;
+            else { m.DrawNoPos = bestNoPos; m.DrawNoFrom = "标题栏"; }
             if (bestRev < 5) m.Rev = "";
             else m.RevPos = bestRevPos;
             return m;

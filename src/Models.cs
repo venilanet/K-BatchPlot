@@ -96,7 +96,9 @@ namespace MPlot
                 double errR = Math.Abs(p.HeightMm - widthMm) + Math.Abs(p.WidthMm - heightMm);
                 if (Math.Min(err, errR) < bestErr) { bestErr = Math.Min(err, errR); best = n; }
             }
-            PaperSpec r = bestErr < Math.Max(widthMm, heightMm) * 0.06
+            // 吸附放宽到 10%：图框包围盒常比标称纸多几毫米（外框线、图签伸出），
+            // 6% 时 A1 实测 870×620 这类只大 3% 左右的也会掉进自定义；10% 仍远小于相邻幅面差距。
+            PaperSpec r = bestErr < Math.Max(widthMm, heightMm) * 0.10
                 ? Get(best)
                 : new PaperSpec { Preset = "自定义", WidthMm = widthMm, HeightMm = heightMm, IsCustom = true };
             return r;

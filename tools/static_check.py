@@ -297,9 +297,9 @@ def check_win7():
     return checks, issues
 
 
-# 菜单 3 项：用户最终要求只留通用型 / 图框型 / 打印设置，名称与顺序逐字一致
+# 菜单 4 项：通用型 / 图框型 / 打印设置 / 一键卸载…，名称与顺序逐字一致
 MENU_EXPECT = [
-    "批打到文件 (通用型)", "批打到文件 (图框型)", "打印设置",
+    "批打到文件 (通用型)", "批打到文件 (图框型)", "打印设置", "一键卸载…",
 ]
 # 用户明确不要的入口：既不能出现在菜单，也不能注册成 CAD 命令
 MENU_REMOVED = [
@@ -347,7 +347,7 @@ def check_behavior(raw_map):
         issues.append("命令注册与精简后的菜单不一致：多=%s 少=%s"
                       % (sorted(registered - expected), sorted(expected - registered)))
     else:
-        checks.append("命令注册恰好为 4 个（3 项菜单 + MP_MENU）")
+        checks.append("命令注册恰好为 5 个（4 项菜单 + MP_MENU）")
     if "MP_MENU" not in registered:
         issues.append("缺少 MP_MENU（菜单挂不上时的手工重建入口）")
     if "ForEachComItem" not in mb:

@@ -5,7 +5,7 @@
 > **开源说明**
 > - 许可证：MIT（见仓库根目录 `LICENSE`），可自由使用与二次开发，保留版权声明即可。
 > - 目标环境：Windows 7 + AutoCAD 2014（R19.1）+ 天正电气 T20 V3，**按本机真实 DLL 反射编译**，不是按官方文档猜 API。换其他版本能否用取决于 API 兼容性，仓库内自检脚本可现场核对。
-> - 三个命令：`MP_FRAME`（图框型，核心）、`MP_GENERAL`（通用型）、`MP_PRINTSET`（打印设置）；顶部菜单栏为「K-批量打印」。
+> - 四个命令：`MP_FRAME`（图框型，核心）、`MP_GENERAL`（通用型）、`MP_PRINTSET`（打印设置）、`MP_UNINSTALL`（一键卸载）；顶部菜单栏为「K-批量打印」。
 > - 零 NuGet / 零联网 / 零 Visual Studio 依赖，用系统自带 `csc.exe` 现场编译。
 > - 下方「这台机器」章节是作者开发机的实测环境记录，换机安装请看「换一台电脑装：三步」。
 
@@ -37,7 +37,7 @@
 
 不用 Visual Studio、不用 .NET SDK、不用联网、不用 NuGet、不用手工 NETLOAD。安装器自动找 CAD、用 Windows 自带 C# 编译器现场编译、部署到自动加载目录，全程写 `install.log`。
 
-**Win7 已专门适配**：安装脚本只要 PowerShell 2.0（Win7 自带），不再依赖 `$PSScriptRoot`、`[pscustomobject]`、.NET 4 专属方法；编译器走默认 C# 4 语法（不传 `/langversion:5`），32 位 Win7 自动回退到 `Microsoft.NET\Framework\v4.0.30319\csc.exe`。菜单精简为「通用型 / 图框型 / 打印设置」3 项，命令注册同步只留这 3 项加 `MP_MENU`。
+**Win7 已专门适配**：安装脚本只要 PowerShell 2.0（Win7 自带），不再依赖 `$PSScriptRoot`、`[pscustomobject]`、.NET 4 专属方法；编译器走默认 C# 4 语法（不传 `/langversion:5`），32 位 Win7 自动回退到 `Microsoft.NET\Framework\v4.0.30319\csc.exe`。菜单精简为「通用型 / 图框型 / 打印设置 / 一键卸载…」4 项，命令注册同步只留这 4 项加 `MP_MENU`。
 
 第一次用：菜单第 3 项「**批打到文件 (图框型)**」→「录入新图框」→ 选「**框选图框（自动识别）**」→ 图上框一个图框，块名和图号/图名/版次 Tag 自动填好 →「开始批打 PDF」。
 
@@ -76,7 +76,7 @@ Autodesk 官方文档：**只有 `C:\Program Files\Autodesk\ApplicationPlugins` 
 
 `APPAUTOLOAD` 为 0 时 AutoCAD 不会自动加载任何 bundle，命令行改成 1 再重启。
 
-**停用 / 卸载**：双击 `卸载.bat`，输入 `Y` 确认。**只把文件夹改名，不删任何文件**，随时能改回来。
+**停用 / 卸载**：双击 `卸载.bat`，输入 `Y` 确认。**只把文件夹改名，不删任何文件**，随时能改回来。也可以在 CAD 里点菜单「打印设置」下方的「一键卸载…」（或敲 `MP_UNINSTALL`）：立即移除菜单、停用自动加载、清理受信任位置与按需加载注册表项，被 CAD 占用的 DLL 安排在下次开机时删除；图框库、设置与日志（`%APPDATA%\MPlot`）保留，重装后可继续用。
 
 ---
 
@@ -108,7 +108,7 @@ Autodesk 官方文档：**只有 `C:\Program Files\Autodesk\ApplicationPlugins` 
 | 源码静态自检 | `python tools\static_check.py` | **PASS**：19 个 .cs、括号 / 预处理 / C# 4 兼容 / 2014 API 防回退 / 菜单 3 项逐字 / 命令覆盖 / 菜单宏无 `^C^C_` / 新命名模板 / 点选确认锚点 / 缩略图 / 手动框选 / 居中根因修复 / 四边留白v2 / 打印前预览 / 块文字全类型读取 / 图框型完整复刻 / **显示名 K-批量打印 / 录入隐藏主窗+可移动+模态父窗 / 行内删除按钮 / 目录含图框大小列 / **图框库真正删除+不可逆确认** / Win7 兼容 / 安装包编码与 XML |
 | 本机 API 核对 | `tools\verify_acad_api.ps1` | **PASS 126 / FAIL 0**（反射本机 19.1.0.0 三支 DLL） |
 | 真编译 | `tools\install.ps1 -CompileOnly` | **PASS**：`build\MPlot.dll` 约 214.5 KB，系统自带编译器（默认 C# 4，Win7 兼容） |
-| 命令注册反射 | `mplot_reflect2`（元数据扫描） | **PASS**：恰好 4 个命令 `MP_GENERAL / MP_FRAME / MP_PRINTSET / MP_MENU`，与 3 项菜单对应 |
+| 命令注册反射 | `mplot_reflect2`（元数据扫描） | **PASS**：恰好 5 个命令 `MP_GENERAL / MP_FRAME / MP_PRINTSET / MP_UNINSTALL / MP_MENU`，与 4 项菜单对应 |
 | 纯逻辑实测 | `tools\selftest\run.ps1` | **PASS 22 / FAIL 0** + 独立校验 xref / 页树 / 内容流 |
 | 部署一致性 | SHA256 比对 | **PASS**：已部署 DLL == build 产物，`SeriesMin=R19.0`、XML 可被 `XmlReader` 解析 |
 
@@ -278,9 +278,10 @@ MPlot/
 | 1 | 批打到文件 (通用型) | `MP_GENERAL` | 遍历所有布局，沿用每个布局自己的页面设置 |
 | 2 | **批打到文件 (图框型)** | `MP_FRAME` | **打开图框信息库管理窗口**（核心入口） |
 | 3 | 打印设置 | `MP_PRINTSET` | PC3、CTB、颜色、偏移、线宽、居中、比例、默认打印机、份数 |
+| 4 | 一键卸载… | `MP_UNINSTALL` | 移除菜单、停用自动加载、清理受信任位置，DLL 安排下次开机删除 |
 | — | （附加） | `MP_MENU` | 重建顶部菜单，不显示在菜单里 |
 
-菜单已按最终要求精简为 **3 项**：顶部「K-批量打印」，下拉只有通用型批打、图框型批打、打印设置。单张打印、两种纸张批打、其余设置、辅助功能、帮助、注册、关于已从菜单**和命令注册**中一并移除。菜单万一没挂上（精简 CUI / 权限受限），3 个功能照常可用，直接敲命令或 `MP_MENU` 重建。
+菜单已按最终要求精简为 **4 项**：顶部「K-批量打印」，下拉只有通用型批打、图框型批打、打印设置、一键卸载…。单张打印、两种纸张批打、其余设置、辅助功能、帮助、注册、关于已从菜单**和命令注册**中一并移除。菜单万一没挂上（精简 CUI / 权限受限），4 个功能照常可用，直接敲命令或 `MP_MENU` 重建。
 
 ---
 
