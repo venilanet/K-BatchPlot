@@ -35,6 +35,10 @@ namespace MPlot
         public bool IsGeneralLayout { get; set; }
         public string Error { get; set; }
         public Point3d Center { get; set; }
+        /// <summary>本张纸张是按实测尺寸自动识别的（库内纸张对不上时自动纠正），不是照抄库内配置。</summary>
+        public bool PaperAutoDetected { get; set; }
+        /// <summary>本张图号/图名的位置是自动定位到的（属性位置或标题栏文字位置）。</summary>
+        public bool PosAutoDetected { get; set; }
     }
 
     /// <summary>手动框选的一个打印范围及其识别到的图号/图名，供批量打印使用。</summary>
@@ -69,9 +73,23 @@ namespace MPlot
     /// 扫描模型空间（可选布局）里的图框，匹配图框库，产出批打队列。
     /// 覆盖：普通块 / 动态块 / 同块多实例 / 旋转图框 / 嵌套图框去重 /
     ///       图框不是块而是普通闭合矩形的老图 / 未录入块名提示。
+    /// 每张图单独 Clone 一份图框配置：纸张按实测尺寸自动识别（库内纸张对不上时纠正，
+    /// 标准幅面进预设、非标尺寸进自定义），图名/图号位置自动学习锚点；
+    /// 库内原条目不动，手动点取校准（区域/锚点/Tag）优先级最高。
     /// </summary>
     public static class FrameScanner
     {
+        /// <summary>
+        /// 同批扫描内学到的锚点：某块名图框的图号/图名归一化位置（相对图框外框 0~1）。
+        /// 第一张同名图框读到位置后记下来，后续同名图框直接按位置读，不用再打分猜。
+        /// 只在当次扫描内有效，不写回图框库；要固化进库仍用「点取图号/图名范围」人工点选确认。
+        /// </summary>
+        private sealed class LearnedAnchor
+        {
+            public bool HasDn; public double DnX; public double DnY;
+            public bool HasTt; public double TtX; public double TtY;
+        }
+
         public static ScanResult Scan(Database db, FrameLibrary lib, GlobalConfig cfg)
         {
             ScanResult res = new ScanResult();
@@ -83,6 +101,9 @@ namespace MPlot
             double marginUnits = 0;
             HashSet<string> unmatched = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             int seq = 0;
+            // 同批扫描内学到的图名/图号锚点（按块名），只在当次扫描内复用
+            Dictionary<string, LearnedAnchor> learnedAnchors =
+                new Dictionary<string, LearnedAnchor>(StringComparer.OrdinalIgnoreCase);
 
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
@@ -142,58 +163,130 @@ namespace MPlot
                         Extents2d wcs = new Extents2d(x0, y0, x1, y1);
                         double wMm = (x1 - x0) * mmPerUnit;
                         double hMm = (y1 - y0) * mmPerUnit;
-                        bool rotated = NeedsRotation(wMm, hMm, f.Paper, cfg.RotateToBestFit);
 
-                        SheetMeta meta = AttrReader.Read(br, tr, f, wcs, cfg.TitleBarTextFallback);
-                        // 若图框库里点取过图号/图名范围，按每张图框的实际包围盒换算出 WCS 区域读当前图的文字。
-                        // 区域读取优先于属性读取（位置是用户明确指定的），仍读不到才保留属性值。
-                        if (f.HasDrawNoRegion || f.HasTitleRegion)
+                        // 每张图单独一份配置：纸张按实测尺寸自动识别，锚点按本批学习结果补齐。
+                        // 库内原条目不动；同一块名不同可见性尺寸不同时，各张按各自实测尺寸出纸。
+                        FrameEntry fc = f.Clone();
+                        bool paperAuto = false;
+                        if (!PaperMatches(fc.Paper, wMm, hMm))
+                        {
+                            fc.Paper = PaperPresets.Guess(wMm, hMm);
+                            paperAuto = true;
+                        }
+                        bool dnAnchorManual = f.HasDnAnchor, ttAnchorManual = f.HasTtAnchor;
+                        LearnedAnchor learned;
+                        if (learnedAnchors.TryGetValue(name, out learned))
+                        {
+                            if (!fc.HasDnAnchor && learned.HasDn) { fc.DnAnchorX = learned.DnX; fc.DnAnchorY = learned.DnY; }
+                            if (!fc.HasTtAnchor && learned.HasTt) { fc.TtAnchorX = learned.TtX; fc.TtAnchorY = learned.TtY; }
+                        }
+
+                        bool rotated = NeedsRotation(wMm, hMm, fc.Paper, cfg.RotateToBestFit);
+
+                        SheetMeta meta = AttrReader.Read(br, tr, fc, wcs, cfg.TitleBarTextFallback);
+                        // 若图框库里点取过图号/图名范围，或本批已学到锚点，按每张图框的实际包围盒
+                        // 换算出 WCS 区域读当前图的文字。区域/锚点读取优先于属性读取（位置是明确指定的），
+                        // 仍读不到才保留属性值。人工锚点来源标「点选确认」，本批学到的锚点标「自动定位」。
+                        if (fc.HasDrawNoRegion || fc.HasTitleRegion || fc.HasDnAnchor || fc.HasTtAnchor)
                         {
                             double fw = x1 - x0, fh = y1 - y0;
-                            // 图号：优先按人工点选确认的锚点找最近文字（最准），读不到再回退到区域内打分猜。
-                            if (f.HasDrawNoRegion)
+                            // 图号：优先按锚点找最近文字（最准），读不到再回退到区域内打分猜。
+                            if (fc.HasDrawNoRegion || fc.HasDnAnchor)
                             {
                                 string v = "";
-                                if (f.HasDnAnchor)
+                                bool fromAnchor = false;
+                                if (fc.HasDnAnchor)
                                 {
-                                    double tol = Math.Max(Math.Abs(f.DnX1 - f.DnX0) * fw,
-                                                          Math.Abs(f.DnY1 - f.DnY0) * fh) * 1.5 + 50;
-                                    v = AttrReader.ReadAtNearest(x0 + f.DnAnchorX * fw,
-                                                                 y0 + f.DnAnchorY * fh, tol);
+                                    // 有人工区域时按区域尺寸定容差；只有学到的锚点时取图框较大边的 3%
+                                    double tol = fc.HasDrawNoRegion
+                                        ? Math.Max(Math.Abs(fc.DnX1 - fc.DnX0) * fw,
+                                                   Math.Abs(fc.DnY1 - fc.DnY0) * fh) * 1.5 + 50
+                                        : Math.Max(fw, fh) * 0.03;
+                                    v = AttrReader.ReadAtNearest(x0 + fc.DnAnchorX * fw,
+                                                                 y0 + fc.DnAnchorY * fh, tol);
+                                    fromAnchor = !string.IsNullOrEmpty(v);
                                 }
-                                if (string.IsNullOrEmpty(v))
+                                if (string.IsNullOrEmpty(v) && fc.HasDrawNoRegion)
                                 {
-                                    Extents2d r = new Extents2d(x0 + f.DnX0 * fw, y0 + f.DnY0 * fh,
-                                                                x0 + f.DnX1 * fw, y0 + f.DnY1 * fh);
+                                    Extents2d r = new Extents2d(x0 + fc.DnX0 * fw, y0 + fc.DnY0 * fh,
+                                                                x0 + fc.DnX1 * fw, y0 + fc.DnY1 * fh);
                                     v = AttrReader.ReadRegionValue(r, "drawno");
                                 }
-                                if (!string.IsNullOrEmpty(v)) { meta.DrawNo = v; meta.Source = "点选确认"; }
+                                if (!string.IsNullOrEmpty(v))
+                                {
+                                    meta.DrawNo = v;
+                                    meta.Source = fromAnchor
+                                        ? (dnAnchorManual ? "点选确认" : "自动定位")
+                                        : (fc.HasDrawNoRegion ? "点选确认" : meta.Source);
+                                    if (fromAnchor)
+                                        meta.DrawNoPos = new Point3d(x0 + fc.DnAnchorX * fw,
+                                                                     y0 + fc.DnAnchorY * fh, 0);
+                                    else if (fc.HasDrawNoRegion)
+                                        meta.DrawNoPos = null; // 区域打分猜的，位置不确定，不拿来学习锚点
+                                }
                             }
                             // 图名：同样优先锚点
-                            if (f.HasTitleRegion)
+                            if (fc.HasTitleRegion || fc.HasTtAnchor)
                             {
                                 string v = "";
-                                if (f.HasTtAnchor)
+                                bool fromAnchor = false;
+                                if (fc.HasTtAnchor)
                                 {
-                                    double tol = Math.Max(Math.Abs(f.TtX1 - f.TtX0) * fw,
-                                                          Math.Abs(f.TtY1 - f.TtY0) * fh) * 1.5 + 50;
-                                    v = AttrReader.ReadAtNearest(x0 + f.TtAnchorX * fw,
-                                                                 y0 + f.TtAnchorY * fh, tol);
+                                    double tol = fc.HasTitleRegion
+                                        ? Math.Max(Math.Abs(fc.TtX1 - fc.TtX0) * fw,
+                                                   Math.Abs(fc.TtY1 - fc.TtY0) * fh) * 1.5 + 50
+                                        : Math.Max(fw, fh) * 0.03;
+                                    v = AttrReader.ReadAtNearest(x0 + fc.TtAnchorX * fw,
+                                                                 y0 + fc.TtAnchorY * fh, tol);
+                                    fromAnchor = !string.IsNullOrEmpty(v);
                                 }
-                                if (string.IsNullOrEmpty(v))
+                                if (string.IsNullOrEmpty(v) && fc.HasTitleRegion)
                                 {
-                                    Extents2d r = new Extents2d(x0 + f.TtX0 * fw, y0 + f.TtY0 * fh,
-                                                                x0 + f.TtX1 * fw, y0 + f.TtY1 * fh);
+                                    Extents2d r = new Extents2d(x0 + fc.TtX0 * fw, y0 + fc.TtY0 * fh,
+                                                                x0 + fc.TtX1 * fw, y0 + fc.TtY1 * fh);
                                     v = AttrReader.ReadRegionValue(r, "title");
                                 }
-                                if (!string.IsNullOrEmpty(v)) { meta.Title = v; meta.Source = "点选确认"; }
+                                if (!string.IsNullOrEmpty(v))
+                                {
+                                    meta.Title = v;
+                                    meta.Source = fromAnchor
+                                        ? (ttAnchorManual ? "点选确认" : "自动定位")
+                                        : (fc.HasTitleRegion ? "点选确认" : meta.Source);
+                                    if (fromAnchor)
+                                        meta.TitlePos = new Point3d(x0 + fc.TtAnchorX * fw,
+                                                                    y0 + fc.TtAnchorY * fh, 0);
+                                    else if (fc.HasTitleRegion)
+                                        meta.TitlePos = null;
+                                }
                             }
+                        }
+
+                        // 学习锚点：本次读到的图号/图名位置（归一化到图框）记下来，供同批后续同名图框用。
+                        // 同名图框位置理应一致，只记第一次读到的（后续不再覆盖，避免一张坏图带偏整批）。
+                        if (meta.DrawNoPos.HasValue || meta.TitlePos.HasValue)
+                        {
+                            double fw = x1 - x0, fh = y1 - y0;
+                            LearnedAnchor la;
+                            if (!learnedAnchors.TryGetValue(name, out la)) la = new LearnedAnchor();
+                            if (meta.DrawNoPos.HasValue && !la.HasDn)
+                            {
+                                la.HasDn = true;
+                                la.DnX = (meta.DrawNoPos.Value.X - x0) / fw;
+                                la.DnY = (meta.DrawNoPos.Value.Y - y0) / fh;
+                            }
+                            if (meta.TitlePos.HasValue && !la.HasTt)
+                            {
+                                la.HasTt = true;
+                                la.TtX = (meta.TitlePos.Value.X - x0) / fw;
+                                la.TtY = (meta.TitlePos.Value.Y - y0) / fh;
+                            }
+                            learnedAnchors[name] = la;
                         }
                         SheetItem item = new SheetItem
                         {
                             Seq = ++seq,
                             BlockName = name,
-                            Config = f,
+                            Config = fc,   // 每张图独立的配置：纸张已按实测尺寸自动识别，锚点已按本批学习结果补齐
                             BlockId = id,
                             LayoutId = GetLayoutId(btr, tr),
                             LayoutName = space.Item2,
@@ -205,7 +298,11 @@ namespace MPlot
                             DrawNo = meta.DrawNo ?? "",
                             Title = meta.Title ?? "",
                             Rev = meta.Rev ?? "",
-                            MetaSource = meta.Source ?? "",
+                            MetaSource = (meta.Source ?? "")
+                                + (paperAuto ? "；纸张自动" : "")
+                                + ((meta.DrawNoPos.HasValue || meta.TitlePos.HasValue) ? "；位置自动" : ""),
+                            PaperAutoDetected = paperAuto,
+                            PosAutoDetected = meta.DrawNoPos.HasValue || meta.TitlePos.HasValue,
                             Center = new Point3d((x0 + x1) / 2, (y0 + y1) / 2, 0)
                         };
                         res.Sheets.Add(item);
@@ -312,6 +409,15 @@ namespace MPlot
                 return btr.LayoutId;
             }
             catch { return ObjectId.Null; }
+        }
+
+        /// <summary>库内纸张与实测尺寸是否一致（两边相对误差之和 &lt; 6% 算一致，含 90° 旋转）。</summary>
+        private static bool PaperMatches(PaperSpec p, double wMm, double hMm)
+        {
+            if (p == null || p.WidthMm <= 0 || p.HeightMm <= 0 || wMm <= 0 || hMm <= 0) return false;
+            double e1 = Math.Abs(p.WidthMm - wMm) / p.WidthMm + Math.Abs(p.HeightMm - hMm) / p.HeightMm;
+            double e2 = Math.Abs(p.HeightMm - wMm) / p.HeightMm + Math.Abs(p.WidthMm - hMm) / p.WidthMm;
+            return Math.Min(e1, e2) < 0.06;
         }
 
         private static bool NeedsRotation(double wMm, double hMm, PaperSpec paper, bool enabled)
@@ -470,7 +576,9 @@ namespace MPlot
                             WidthMm = w, HeightMm = h,
                             Rotated = NeedsRotation(w, h, f.Paper, cfg.RotateToBestFit),
                             DrawNo = meta.DrawNo ?? "", Title = meta.Title ?? "", Rev = meta.Rev ?? "",
-                            MetaSource = string.IsNullOrEmpty(meta.DrawNo + meta.Title) ? "" : "标题栏文字",
+                            MetaSource = (string.IsNullOrEmpty(meta.DrawNo + meta.Title) ? "" : "标题栏文字")
+                                + ((meta.DrawNoPos.HasValue || meta.TitlePos.HasValue) ? "；位置自动" : ""),
+                            PosAutoDetected = meta.DrawNoPos.HasValue || meta.TitlePos.HasValue,
                             Center = new Point3d((e.MinPoint.X + e.MaxPoint.X) / 2, (e.MinPoint.Y + e.MaxPoint.Y) / 2, 0)
                         });
                         break;

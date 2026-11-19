@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Collections.Specialized;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
@@ -231,7 +232,12 @@ namespace MPlot
             return TryExtents(br);
         }
 
-        /// <summary>框选录入：只允许选 INSERT，返回第一个块参照的 id。ESC / 空选返回 Null。</summary>
+        /// <summary>
+        /// 框选录入：只允许选 INSERT。窗选会同时选中图框块、嵌套子块和其他块，
+        /// 直接取第一条会「同图框不同拾取点抓到不同块」——所以多选时按优先级挑：
+        /// ① 块名已在图框库里登记的；② 否则几何包围盒面积最大的（图框外框一定比里面的子块大）。
+        /// 单选 / ESC / 空选时行为不变（单选直接返回，空选返回 Null）。
+        /// </summary>
         public static ObjectId PickFrameInsert()
         {
             Editor ed = Ed;
@@ -243,11 +249,83 @@ namespace MPlot
             TypedValue[] filter = { new TypedValue((int)DxfCode.Start, "INSERT") };
             PromptSelectionResult psr = ed.GetSelection(pso, new SelectionFilter(filter));
             if (psr.Status != PromptStatus.OK || psr.Value == null || psr.Value.Count == 0) return ObjectId.Null;
+            List<ObjectId> ids = new List<ObjectId>();
             foreach (SelectedObject so in psr.Value)
+                if (so != null && !so.ObjectId.IsNull) ids.Add(so.ObjectId);
+            if (ids.Count == 0) return ObjectId.Null;
+            if (ids.Count == 1) return ids[0];
+
+            FrameLibrary lib = null;
+            try { lib = FrameLibrary.Load(); } catch { }
+            ObjectId best = ObjectId.Null;
+            double bestArea = -1;
+            try
             {
-                if (so != null && !so.ObjectId.IsNull) return so.ObjectId;
+                Database db = Db;
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    foreach (ObjectId id in ids)
+                    {
+                        BlockReference br = tr.GetObject(id, OpenMode.ForRead) as BlockReference;
+                        if (br == null) continue;
+                        string name = EffectiveBlockName(br, tr);
+                        if (lib != null && FrameScanner.FindConfig(lib, name) != null) return id;  // 库里有的，直接要
+                        Extents3d? ex = TryExtents(br);
+                        double area = 0;
+                        if (ex.HasValue)
+                            area = (ex.Value.MaxPoint.X - ex.Value.MinPoint.X)
+                                 * (ex.Value.MaxPoint.Y - ex.Value.MinPoint.Y);
+                        if (area > bestArea) { bestArea = area; best = id; }
+                    }
+                    tr.Commit();
+                }
             }
-            return ObjectId.Null;
+            catch (Exception ex) { Logger.Verbose("框选图框挑块失败，退回第一条：" + ex.Message); return ids[0]; }
+            return best.IsNull ? ids[0] : best;
+        }
+
+        /// <summary>
+        /// 视图缩放到指定 WCS 矩形（「预览选中」用）。
+        /// Editor.ZoomWindow 在 2014 是公开 API，但本仓库对版本敏感 API 一律走反射兜底
+        /// （与 ShowModalDialog / StartUserInteraction 同款做法）；
+        /// 反射失败时改走 ViewTableRecord 改中心点 + 高度；再失败也不抛错，
+        /// 用户仍可在让出的交互里自己平移 / 缩放查看。
+        /// </summary>
+        public static void ZoomToRect(Extents2d r)
+        {
+            Editor ed = Ed;
+            if (ed == null) return;
+            double w = r.MaxPoint.X - r.MinPoint.X, h = r.MaxPoint.Y - r.MinPoint.Y;
+            if (w <= 0 || h <= 0) return;
+            try
+            {
+                MethodInfo m = ed.GetType().GetMethod("ZoomWindow",
+                    new[] { typeof(Point3d), typeof(Point3d) });
+                if (m != null)
+                {
+                    m.Invoke(ed, new object[]
+                    {
+                        new Point3d(r.MinPoint.X, r.MinPoint.Y, 0),
+                        new Point3d(r.MaxPoint.X, r.MaxPoint.Y, 0)
+                    });
+                    try { ed.UpdateScreen(); } catch { }
+                    return;
+                }
+            }
+            catch (Exception ex) { Logger.Verbose("ZoomWindow 不可用，改走视图记录：" + ex.Message); }
+            try
+            {
+                using (ViewTableRecord v = ed.GetCurrentView())
+                {
+                    v.CenterPoint = new Point2d((r.MinPoint.X + r.MaxPoint.X) / 2,
+                                                (r.MinPoint.Y + r.MaxPoint.Y) / 2);
+                    v.Height = h;
+                    v.Width = w;
+                    ed.SetCurrentView(v);
+                    ed.UpdateScreen();
+                }
+            }
+            catch (Exception ex) { Logger.Verbose("视图缩放失败（不影响返回清单）：" + ex.Message); }
         }
 
         /// <summary>让用户点一个插入点（生成 CAD 原生 TABLE 目录时用）。</summary>

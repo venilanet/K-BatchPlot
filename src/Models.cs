@@ -12,6 +12,12 @@ namespace MPlot
     public enum ScaleMode { AutoFromFrame, OneToOne, ScaleToFit, Custom }
     /// <summary>合并通道优先级。内置合并零依赖，默认优先；GS 用于兜底特殊 PDF 结构。</summary>
     public enum MergeMode { GhostscriptFirst, BuiltInFirst, GhostscriptOnly }
+    /// <summary>
+    /// 图框属性读取模式。DisplayText（默认）：读动态块当前显示值——动态参数优先、
+    /// 隐藏属性不读；RawAttribute：只读 ATTRIB 原始存储值，不过滤、不覆盖。
+    /// 天正动态图框切换可见性后，图面显示的经常不是 ATTRIB 存储值，所以默认用显示文本。
+    /// </summary>
+    public enum AttrReadMode { DisplayText, RawAttribute }
     /// <summary>颜色输出快捷预设；选 Custom 时完全以 CTB 下拉为准。</summary>
     public enum ColorMode { Custom, Color, Monochrome, Grayscale }
 
@@ -364,6 +370,8 @@ namespace MPlot
         public bool ScanXrefFrames { get; set; }
         public bool RectFrameFallback { get; set; }       // 图框是普通矩形多段线时的兜底
         public bool TitleBarTextFallback { get; set; }    // 块无属性时，按标题栏位置找文字
+        /// <summary>图框属性读取模式：DisplayText 读动态块显示值（默认），RawAttribute 只读 ATTRIB 存储值。</summary>
+        public AttrReadMode AttrReadMode { get; set; }
         public bool IgnoreEmptyNames { get; set; }
         public double DuplicateIouThreshold { get; set; } // 嵌套/重叠图框去重阈值
         public bool DisableBackgroundPlot { get; set; }
@@ -442,6 +450,7 @@ namespace MPlot
             ScanXrefFrames = false;
             RectFrameFallback = true;
             TitleBarTextFallback = true;
+            AttrReadMode = AttrReadMode.DisplayText;
             IgnoreEmptyNames = false;
             DuplicateIouThreshold = 0.90;
             DisableBackgroundPlot = true;

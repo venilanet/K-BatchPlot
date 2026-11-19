@@ -37,6 +37,7 @@ namespace MPlot
         private TextBox _prefix, _date;
         private DataGridView _tokenGrid;
         private CheckBox _scanPs, _scanXref, _rectFallback, _textFallback, _bgPlot;
+        private ComboBox _attrMode;
         private NumericUpDown _iou, _margin, _mmPerUnit;
 
         public bool StartBatchRequested { get; private set; }
@@ -273,6 +274,8 @@ namespace MPlot
             _scanXref = Ui.C("扫描外部参照(Xref)里的图框", c.ScanXrefFrames);
             _rectFallback = Ui.C("图框是普通闭合矩形时也识别（老图兜底）", c.RectFrameFallback);
             _textFallback = Ui.C("块无属性时按标题栏位置找图号 / 图名 / 版次", c.TitleBarTextFallback);
+            _attrMode = Ui.D(new[] { "读取动态块显示文本（推荐）", "读取原始属性值（ATTRIB 存储值）" },
+                             320, (int)c.AttrReadMode);
             _bgPlot = Ui.C("关闭后台打印（推荐）", c.DisableBackgroundPlot);
             _iou = Ui.N(c.DuplicateIouThreshold, 0.1, 1.0, 2);
             _margin = Ui.N(c.WindowMarginMm, 0, 100, 1);
@@ -301,6 +304,8 @@ namespace MPlot
             p.Controls.Add(Ui.L("── 扫描 / 识别 ──"));
             p.Controls.Add(Ui.Row(_scanPs, _scanXref));
             p.Controls.Add(Ui.Row(_rectFallback, _textFallback));
+            p.Controls.Add(Ui.Row(Ui.L("图框属性读取", 150), _attrMode));
+            p.Controls.Add(Ui.L("天正动态图框切换可见性后，图面显示的常不是 ATTRIB 存储值；默认读显示文本（动态参数优先、隐藏属性不读、同 Tag 按策略取一条）。切到原始值时，不读动态参数、不过滤隐藏属性。"));
             p.Controls.Add(Ui.Row(Ui.L("嵌套图框去重阈值", 150), _iou));
             p.Controls.Add(Ui.Row(Ui.L("四边留白 mm", 150), _margin, Ui.L("纸张不变、内容缩小留白；0=贴边"), _mmPerUnit));
             p.Controls.Add(Ui.Row(_bgPlot));
@@ -395,6 +400,7 @@ namespace MPlot
             c.ProjectPrefix = _prefix.Text; c.DateFormat = _date.Text.Trim();
             c.ScanPaperSpace = _scanPs.Checked; c.ScanXrefFrames = _scanXref.Checked;
             c.RectFrameFallback = _rectFallback.Checked; c.TitleBarTextFallback = _textFallback.Checked;
+            c.AttrReadMode = (AttrReadMode)Math.Max(0, Math.Min(1, _attrMode.SelectedIndex));
             c.DisableBackgroundPlot = _bgPlot.Checked;
             c.DuplicateIouThreshold = (double)_iou.Value;
             c.WindowMarginMm = (double)_margin.Value;
@@ -664,12 +670,13 @@ namespace MPlot
                     string name = AcadUtil.EffectiveBlockName(br, tr);
                     _block.Text = name;
                     _blockShown.Text = "图框对应的图块：" + name;
-                    _pickedAttrs = AttrReader.ListAttributes(br, tr);
                     Extents3d? ex = AcadUtil.FrameExtents(br, tr);
                     _pickedWcs = ex.HasValue
                         ? (Extents2d?)new Extents2d(ex.Value.MinPoint.X, ex.Value.MinPoint.Y,
                                                     ex.Value.MaxPoint.X, ex.Value.MaxPoint.Y)
                         : null;
+                    // 先算出图框范围再列属性：同 TAG 去重时要判断谁落在标题栏里
+                    _pickedAttrs = AttrReader.ListAttributes(br, tr, _pickedWcs);
                     tr.Commit();
                 }
                 ReGuess();
@@ -696,6 +703,8 @@ namespace MPlot
                 string judge = a.Tag == g.TagDrawNo ? "图号 (A)"
                     : a.Tag == g.TagRev ? "版次 (B)"
                     : a.Tag == g.TagTitle ? "图名 (C)" : "—";
+                if (a.FromDynamic) judge += " · 动态";   // 值来自动态块实时参数，不是 ATTRIB 存储值
+                if (a.FromDefinition) judge += " · 定义";
                 string pos = "—";
                 if (_pickedWcs.HasValue)
                 {

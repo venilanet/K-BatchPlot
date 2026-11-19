@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Text.RegularExpressions;
@@ -15,6 +16,10 @@ namespace MPlot
         public string Value { get; set; }
         public Point3d Position { get; set; }
         public bool FromDefinition { get; set; }
+        /// <summary>当前可见性状态下是否隐藏（Invisible=1）。隐藏属性图面上不显示，显示模式下不读。</summary>
+        public bool Invisible { get; set; }
+        /// <summary>值来自动态块实时参数（显示值），不是 ATTRIB 存储值。</summary>
+        public bool FromDynamic { get; set; }
     }
 
     public sealed class TagGuess
@@ -32,6 +37,10 @@ namespace MPlot
         public string Title { get; set; }
         public string Rev { get; set; }
         public string Source { get; set; }   // 属性 / 标题栏文字 / 空
+        /// <summary>图号 / 图名 / 版次文字在图中的实际位置（WCS），供「自动定位锚点」学习用；读不到时为 null。</summary>
+        public Point3d? DrawNoPos { get; set; }
+        public Point3d? TitlePos { get; set; }
+        public Point3d? RevPos { get; set; }
     }
 
     /// <summary>
@@ -39,6 +48,14 @@ namespace MPlot
     /// 面对的现实：天正图框里 Tag 可能是「图号」「TNR」「DRAWING_NO」「图纸编号」甚至纯拼音，
     /// 还有大量老图根本没有块属性、图号图名是标题栏里散着的单行文字/天正图名标注对象。
     /// 所以这里做三层：精确 Tag → 启发式猜 Tag → 标题栏区域文字兜底。
+    ///
+    /// 动态块特别处理（显示模式，默认）：天正动态图框切换可见性后，图面显示的
+    /// 经常不是 ATTRIB 存储值——AttributeReference.TextString 读到的是底层存储值，
+    /// 同图框换个拾取点（落在不同子块上）结果还不一样。所以显示模式下：
+    /// ① 优先读动态块实时参数（DynamicBlockReferencePropertyCollection）覆盖同名 Tag；
+    /// ② 只读顶层块引用自身的属性，不读嵌套子块的属性；
+    /// ③ 过滤隐藏属性（Invisible=1）；④ 同 TAG 多条时按策略只留一条。
+    /// 原始模式（AttrReadMode.RawAttribute）则只读 ATTRIB 存储值，不过滤、不覆盖。
     /// </summary>
     public static class AttrReader
     {
@@ -64,8 +81,21 @@ namespace MPlot
         /// <summary>块参照上的属性 + 块定义里的属性定义（属性值可能为空，但 Tag 要让用户看到）。</summary>
         public static List<AttrInfo> ListAttributes(BlockReference br, Transaction tr)
         {
+            return ListAttributes(br, tr, null);
+        }
+
+        /// <summary>
+        /// 块参照上的属性 + 块定义里的属性定义。只读顶层块引用自身的属性，不递归子块 / 嵌套块。
+        /// 显示模式（默认）：① 动态块实时参数覆盖同名 Tag；② 过滤隐藏属性（Invisible=1）；
+        /// ③ 同 TAG 多条时按策略只留一条。原始模式：不过滤、不覆盖，只做同 TAG 去重。
+        /// frameWcs 供同 TAG 去重时判断「是否落在标题栏区域」用，可为空。
+        /// </summary>
+        public static List<AttrInfo> ListAttributes(BlockReference br, Transaction tr, Extents2d? frameWcs)
+        {
             List<AttrInfo> list = new List<AttrInfo>();
             if (br == null || tr == null) return list;
+            bool displayMode = GlobalConfig.Current.AttrReadMode == AttrReadMode.DisplayText;
+
             try
             {
                 AttributeCollection col = br.AttributeCollection;
@@ -75,17 +105,51 @@ namespace MPlot
                     {
                         AttributeReference ar = tr.GetObject(id, OpenMode.ForRead) as AttributeReference;
                         if (ar == null) continue;
+                        bool invisible = false;
+                        try { invisible = ar.Invisible; } catch { }
+                        if (displayMode && invisible) continue;   // 隐藏属性当前不显示，不读
                         list.Add(new AttrInfo
                         {
                             Tag = ar.Tag ?? "",
                             Value = CleanText(ar.TextString),
                             Position = ar.Position,
-                            FromDefinition = false
+                            FromDefinition = false,
+                            Invisible = invisible
                         });
                     }
                 }
             }
             catch (Exception ex) { Logger.Verbose("读取块属性失败：" + ex.Message); }
+
+            // 动态块实时参数：同名 Tag 时覆盖属性值；无同名属性时作为一条新属性加入
+            if (displayMode)
+            {
+                try
+                {
+                    Dictionary<string, string> dyn = ReadDynamicProperties(br);
+                    foreach (KeyValuePair<string, string> kv in dyn)
+                    {
+                        if (string.IsNullOrWhiteSpace(kv.Value)) continue;
+                        AttrInfo hit = null;
+                        foreach (AttrInfo a in list)
+                            if (string.Equals(a.Tag, kv.Key, StringComparison.OrdinalIgnoreCase)) { hit = a; break; }
+                        if (hit != null)
+                        {
+                            hit.Value = kv.Value;
+                            hit.FromDynamic = true;
+                        }
+                        else
+                        {
+                            list.Add(new AttrInfo
+                            {
+                                Tag = kv.Key, Value = kv.Value,
+                                Position = br.Position, FromDefinition = false, FromDynamic = true
+                            });
+                        }
+                    }
+                }
+                catch (Exception ex) { Logger.Verbose("动态参数合并失败：" + ex.Message); }
+            }
 
             try
             {
@@ -113,7 +177,89 @@ namespace MPlot
                 }
             }
             catch (Exception ex) { Logger.Verbose("读取块属性定义失败：" + ex.Message); }
-            return list;
+            return DedupeAttributes(list, frameWcs);
+        }
+
+        /// <summary>
+        /// 动态块实时生效参数（GetDynamicBlockProperties 的 .NET 等价物）。
+        /// 天正动态图框切换可见性后，图面显示的是动态参数值，不是 ATTRIB 原始存储值，
+        /// 所以显示模式下先读这里：参数名与 Tag 同名时，动态值优先。
+        /// 只读顶层块引用自身的动态参数，不进子块。非动态块返回空表。
+        /// </summary>
+        public static Dictionary<string, string> ReadDynamicProperties(BlockReference br)
+        {
+            Dictionary<string, string> map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (br == null || !br.IsDynamicBlock) return map;
+            try
+            {
+                DynamicBlockReferencePropertyCollection props = br.DynamicBlockReferencePropertyCollection;
+                if (props == null) return map;
+                foreach (DynamicBlockReferenceProperty p in props)
+                {
+                    if (p == null) continue;
+                    string name = (p.PropertyName ?? "").Trim();
+                    if (name.Length == 0) continue;
+                    object v = null;
+                    try { v = p.Value; } catch { }
+                    string s = "";
+                    if (v != null)
+                    {
+                        if (v is double) s = ((double)v).ToString("0.####", CultureInfo.InvariantCulture);
+                        else if (v is float) s = ((float)v).ToString("0.####", CultureInfo.InvariantCulture);
+                        else s = Convert.ToString(v);
+                    }
+                    if (!map.ContainsKey(name)) map[name] = CleanText(s);
+                }
+            }
+            catch (Exception ex) { Logger.Verbose("读取动态块参数失败：" + ex.Message); }
+            return map;
+        }
+
+        /// <summary>
+        /// 同 TAG 多属性去重（动态块里一个 Tag 常对应多个 ATTRIB，取第一条是随机的）。
+        /// 策略按优先级：① 可见的（Invisible=0，当前可见性状态下真正显示的）；
+        /// ② 值非空的；③ 来自动态参数的（显示值）；④ 位置落在标题栏区域的；
+        /// ⑤ 仍并列时取集合里第一条。被丢掉的记 Verbose 日志，方便对账。
+        /// </summary>
+        private static List<AttrInfo> DedupeAttributes(List<AttrInfo> list, Extents2d? frameWcs)
+        {
+            Dictionary<string, List<AttrInfo>> groups = new Dictionary<string, List<AttrInfo>>(StringComparer.OrdinalIgnoreCase);
+            List<string> order = new List<string>();
+            foreach (AttrInfo a in list)
+            {
+                string key = (a.Tag ?? "").Trim();
+                if (key.Length == 0) continue;
+                if (!groups.ContainsKey(key)) { groups[key] = new List<AttrInfo>(); order.Add(key); }
+                groups[key].Add(a);
+            }
+            List<AttrInfo> result = new List<AttrInfo>();
+            foreach (string key in order)
+            {
+                List<AttrInfo> g = groups[key];
+                if (g.Count == 1) { result.Add(g[0]); continue; }
+                AttrInfo best = g[0];
+                int bestScore = ScoreAttr(best, frameWcs);
+                for (int i = 1; i < g.Count; i++)
+                {
+                    int s = ScoreAttr(g[i], frameWcs);
+                    if (s > bestScore) { bestScore = s; best = g[i]; }
+                }
+                Logger.Verbose("同 TAG 去重：" + key + " 共 " + g.Count + " 条，取「" + best.Value + "」"
+                    + (best.FromDynamic ? "（动态参数）" : (best.FromDefinition ? "（定义）" : "（属性）")));
+                result.Add(best);
+            }
+            return result;
+        }
+
+        private static int ScoreAttr(AttrInfo a, Extents2d? frame)
+        {
+            int s = 0;
+            if (!a.Invisible) s += 8;
+            if (!string.IsNullOrWhiteSpace(a.Value)) s += 4;
+            if (a.FromDynamic) s += 2;
+            if (frame.HasValue && InTitleBar(a.Position, frame.Value)) s += 1;
+            if (a.FromDefinition) s -= 2;   // 只有定义、没有实例值时垫底
+            return s;
         }
 
         public static string CleanText(string s)
@@ -223,15 +369,24 @@ namespace MPlot
                                      Extents2d? frameWcs, bool allowTextFallback)
         {
             SheetMeta m = new SheetMeta { DrawNo = "", Title = "", Rev = "", Source = "" };
-            List<AttrInfo> attrs = ListAttributes(br, tr);
+            List<AttrInfo> attrs = ListAttributes(br, tr, frameWcs);
             TagGuess guess = null;
             if (string.IsNullOrWhiteSpace(cfg.TagDrawNo) || string.IsNullOrWhiteSpace(cfg.TagTitle) || string.IsNullOrWhiteSpace(cfg.TagRev))
                 guess = GuessTags(attrs, frameWcs);
 
-            m.DrawNo = cfg.ReadDrawNo ? Pick(attrs, cfg.TagDrawNo, guess == null ? "" : guess.TagDrawNo) : "";
-            m.Title = cfg.ReadTitle ? Pick(attrs, cfg.TagTitle, guess == null ? "" : guess.TagTitle) : "";
-            m.Rev = cfg.ReadRev ? Pick(attrs, cfg.TagRev, guess == null ? "" : guess.TagRev) : "";
-            if (!string.IsNullOrEmpty(m.DrawNo) || !string.IsNullOrEmpty(m.Title)) m.Source = "块属性";
+            AttrInfo dn = cfg.ReadDrawNo ? PickInfo(attrs, cfg.TagDrawNo, guess == null ? "" : guess.TagDrawNo) : null;
+            AttrInfo tt = cfg.ReadTitle ? PickInfo(attrs, cfg.TagTitle, guess == null ? "" : guess.TagTitle) : null;
+            AttrInfo rv = cfg.ReadRev ? PickInfo(attrs, cfg.TagRev, guess == null ? "" : guess.TagRev) : null;
+            m.DrawNo = dn == null ? "" : dn.Value;
+            m.Title = tt == null ? "" : tt.Value;
+            m.Rev = rv == null ? "" : rv.Value;
+            // 位置只记实例属性的（定义里的 Position 是块定义局部坐标，不能当 WCS 锚点）
+            if (dn != null && !dn.FromDefinition) m.DrawNoPos = dn.Position;
+            if (tt != null && !tt.FromDefinition) m.TitlePos = tt.Position;
+            if (rv != null && !rv.FromDefinition) m.RevPos = rv.Position;
+            if (!string.IsNullOrEmpty(m.DrawNo) || !string.IsNullOrEmpty(m.Title))
+                m.Source = ((dn != null && dn.FromDynamic) || (tt != null && tt.FromDynamic) || (rv != null && rv.FromDynamic))
+                    ? "动态块显示值" : "块属性";
 
             bool empty = string.IsNullOrEmpty(m.DrawNo) && string.IsNullOrEmpty(m.Title);
             if (empty && allowTextFallback && frameWcs.HasValue)
@@ -249,6 +404,13 @@ namespace MPlot
         /// <summary>Tag 配置支持 "图号|DRAWING_NO|A" 多候选、忽略大小写、支持 * 通配。</summary>
         private static string Pick(List<AttrInfo> attrs, string configured, string guessed)
         {
+            AttrInfo a = PickInfo(attrs, configured, guessed);
+            return a == null ? "" : a.Value;
+        }
+
+        /// <summary>Pick 的取条目版：返回命中的 AttrInfo（带 FromDynamic / Invisible 标记），没命中返回 null。</summary>
+        private static AttrInfo PickInfo(List<AttrInfo> attrs, string configured, string guessed)
+        {
             string[] keys = (configured ?? "").Split(new[] { '|', ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
             List<string> all = new List<string>(keys);
             if (!string.IsNullOrEmpty(guessed)) all.Add(guessed);
@@ -262,11 +424,11 @@ namespace MPlot
                     bool hit = k.Contains("*")
                         ? MatchWild(a.Tag, k)
                         : string.Equals(a.Tag, k, StringComparison.OrdinalIgnoreCase);
-                    if (hit && !string.IsNullOrWhiteSpace(a.Value)) return a.Value.Trim();
+                    if (hit && !string.IsNullOrWhiteSpace(a.Value)) return a;   // 值进列表时已 CleanText 过，无需再 Trim
                 }
             }
             // 配置为空且没猜到时，最后按值形态捞一次
-            return "";
+            return null;
         }
 
         private static bool MatchWild(string s, string pattern)
@@ -360,21 +522,26 @@ namespace MPlot
             }
 
             // 按「从右到左、从上到下」排，标题栏里图名通常在最显眼的一行
+            // 胜出的文字同时记下中心点，供「自动定位锚点」学习用
             double bestTitle = -99, bestNo = -99, bestRev = -99;
+            Point3d bestTitlePos = Point3d.Origin, bestNoPos = Point3d.Origin, bestRevPos = Point3d.Origin;
             foreach (var t in texts)
             {
                 string s = t.Item1;
                 if (s.Length == 0 || s.Length > 60) continue;
                 double st = ScoreValueAsTitle(s) + (s.Length >= 4 ? 1 : 0);
-                if (st > bestTitle) { bestTitle = st; m.Title = s; }
+                if (st > bestTitle) { bestTitle = st; m.Title = s; bestTitlePos = t.Item2; }
                 double sn = ScoreValueAsDrawNo(s) + (Cjk.Matches(s).Count == 0 ? 1 : 0);
-                if (sn > bestNo && s != m.Title) { bestNo = sn; m.DrawNo = s; }
+                if (sn > bestNo && s != m.Title) { bestNo = sn; m.DrawNo = s; bestNoPos = t.Item2; }
                 double sr = ScoreValueAsRev(s);
-                if (sr > bestRev && s != m.Title && s != m.DrawNo) { bestRev = sr; m.Rev = s; }
+                if (sr > bestRev && s != m.Title && s != m.DrawNo) { bestRev = sr; m.Rev = s; bestRevPos = t.Item2; }
             }
             if (bestTitle < 5) m.Title = "";
+            else m.TitlePos = bestTitlePos;
             if (bestNo < 5) m.DrawNo = "";
+            else m.DrawNoPos = bestNoPos;
             if (bestRev < 5) m.Rev = "";
+            else m.RevPos = bestRevPos;
             return m;
         }
 
@@ -513,26 +680,36 @@ namespace MPlot
             if (en == null || depth > MaxScanDepth || texts.Count >= MaxScanTexts) return;
 
             // ---- 1) 块参照：先读块属性，再递归块定义里的文字 ----
+            // 只读顶层块引用的属性：嵌套子块的属性不读（depth > 0 时跳过 1a），
+            // 否则「同图框不同拾取点抓到不同子块的属性」。块定义里的普通文字仍继续扫（1b），
+            // 那是图框自身的显示文字，不是嵌套块属性。
             BlockReference br = en as BlockReference;
             if (br != null)
             {
                 // 1a) 块属性（ATTRIB）：图号图名最常见的存放方式。Position 已是 WCS，不用再变换。
-                try
+                if (depth == 0)
                 {
-                    AttributeCollection ac = br.AttributeCollection;
-                    if (ac != null)
-                        foreach (ObjectId aid in ac)
-                        {
-                            if (texts.Count >= MaxScanTexts) break;
-                            AttributeReference ar = tr.GetObject(aid, OpenMode.ForRead) as AttributeReference;
-                            if (ar == null) continue;
-                            string s = CleanText(ar.TextString);
-                            if (string.IsNullOrWhiteSpace(s)) continue;
-                            Point3d pos = AttributeCenter(ar);
-                            if (InRect(pos, x0, y0, x1, y1)) texts.Add(new Tuple<string, Point3d>(s, pos));
-                        }
+                    bool displayMode = GlobalConfig.Current.AttrReadMode == AttrReadMode.DisplayText;
+                    try
+                    {
+                        AttributeCollection ac = br.AttributeCollection;
+                        if (ac != null)
+                            foreach (ObjectId aid in ac)
+                            {
+                                if (texts.Count >= MaxScanTexts) break;
+                                AttributeReference ar = tr.GetObject(aid, OpenMode.ForRead) as AttributeReference;
+                                if (ar == null) continue;
+                                bool invisible = false;
+                                try { invisible = ar.Invisible; } catch { }
+                                if (displayMode && invisible) continue;   // 隐藏属性图面不显示
+                                string s = CleanText(ar.TextString);
+                                if (string.IsNullOrWhiteSpace(s)) continue;
+                                Point3d pos = AttributeCenter(ar);
+                                if (InRect(pos, x0, y0, x1, y1)) texts.Add(new Tuple<string, Point3d>(s, pos));
+                            }
+                    }
+                    catch (Exception exa) { Logger.Verbose("块属性读取跳过：" + exa.Message); }
                 }
-                catch (Exception exa) { Logger.Verbose("块属性读取跳过：" + exa.Message); }
 
                 // 1b) 块定义里的内嵌文字：用块变换把局部坐标换算到 WCS
                 try

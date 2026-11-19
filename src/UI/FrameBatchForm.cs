@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
+using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 using Extents2d = Autodesk.AutoCAD.DatabaseServices.Extents2d;
 
@@ -43,7 +44,7 @@ namespace MPlot
             ClientSize = new Size(1120, 700);
             MinimumSize = new Size(900, 560);
 
-            _hint = Ui.L("双击单元格可直接修改图号/图名/版次/纸张/比例/文件名；重复图号会自动标红。", 900);
+            _hint = Ui.L("双击单元格可直接修改图号/图名/版次/纸张/比例/文件名；重复图号会自动标红。\r\n「预览选中」直接回图上看选中图框（可平移/缩放，按回车返回清单），不用再看缩略图。", 900);
 
             _grid.Dock = DockStyle.Fill;
             _grid.AllowUserToAddRows = false;
@@ -75,7 +76,7 @@ namespace MPlot
                 Ui.B("下移", delegate { MoveRow(1); }, 70),
                 Ui.B("纸张统计", delegate { ShowStat(); }, 96),
                 Ui.B("导出目录CSV", delegate { ExportCsv(); }, 120),
-                Ui.L("提示：点列头【纸张尺寸】可统一改纸张", 300)));
+                Ui.L("提示：选中多行后点【应用纸张】可批量改纸张；纸张列双击可单张改", 300)));
 
             FlowLayoutPanel bottom = new FlowLayoutPanel
             {
@@ -328,58 +329,51 @@ namespace MPlot
             RefreshGrid();
         }
 
+        /// <summary>
+        /// 预览选中：不在缩略图里看，直接回 CAD 图上看。
+        /// WinForms 模态窗做不到无模式，但本仓库已有现成机制 Ui.StartInteraction
+        /// （ManualPickForm「在图上框选范围」就是这么做的）：临时让出 CAD 交互权，
+        /// Zoom 到选中图框 → 用户可平移 / 缩放查看 → 回车回到清单。
+        /// 窗体本身不关闭、_items 是同一个对象，表格里已改的图号 / 版次 / 纸张 / 比例全部保留；
+        /// 为防正在编辑的单元格还没提交，先 EndEdit 再全行 SyncRow。
+        /// 旧实现（ThumbnailMaker 生成 PNG 缩略图）已废弃：它依赖 PublishToWeb PNG.pc3，
+        /// 机器上没有就直接报「预览生成失败」，而且缩略图本来也看不清图面细节。
+        /// </summary>
         private void PreviewSelected()
         {
             List<int> idx = SelectedIndices();
             if (idx.Count == 0) { Ui.Warn("请先选中要预览的行"); return; }
-            List<Extents2d> rects = new List<Extents2d>();
-            foreach (int i in idx) rects.Add(_items[i].WindowWcs);
-            try
+            if (AcadUtil.Ed == null) { Ui.Warn("没有打开的图纸"); return; }
+
+            // 先把正在编辑的单元格提交回 _items，否则返回后那格的修改会丢
+            try { _grid.EndEdit(); } catch { }
+            for (int i = 0; i < _items.Count; i++) SyncRow(i);
+
+            // 选中行的并集外框，留 5% 边距，别让图框贴着视口边
+            double x0 = double.MaxValue, y0 = double.MaxValue, x1 = double.MinValue, y1 = double.MinValue;
+            foreach (int i in idx)
             {
-                List<string> pngs = ThumbnailMaker.Generate(rects);
-                if (pngs == null || pngs.Count == 0) { Ui.Warn("预览生成失败（PDF 预览依赖 PNG 虚拟打印机）"); return; }
-                Form f = new Form
-                {
-                    Text = "打印预览 —— 点缩略图放大", Font = Ui.Font9,
-                    StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(900, 640)
-                };
-                FlowLayoutPanel flow = new FlowLayoutPanel
-                { FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(10) };
-                for (int k = 0; k < pngs.Count; k++)
-                {
-                    string png = pngs[k];
-                    int src = idx.Count > k ? idx[k] : k;
-                    string label = "第 " + (src + 1) + " 张  " + (_items[src].DrawNo ?? "") + "  " + (_items[src].Title ?? "");
-                    flow.Controls.Add(Ui.L(label, 820));
-                    PictureBox box = new PictureBox
-                    {
-                        Width = 820, Height = 120, SizeMode = PictureBoxSizeMode.Zoom,
-                        BorderStyle = BorderStyle.FixedSingle, Cursor = Cursors.Hand, Tag = png
-                    };
-                    try
-                    {
-                        using (FileStream fs = new FileStream(png, FileMode.Open, FileAccess.Read))
-                            box.Image = Image.FromStream(fs);
-                    }
-                    catch { }
-                    box.Click += delegate(object s, EventArgs e)
-                    {
-                        PictureBox me = s as PictureBox;
-                        if (me == null || me.Tag == null) return;
-                        Form big = new Form { Text = "打印预览（放大）", Font = Ui.Font9,
-                            StartPosition = FormStartPosition.CenterScreen, ClientSize = new Size(1000, 740) };
-                        PictureBox pb = new PictureBox { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom };
-                        try { using (FileStream fs2 = new FileStream(me.Tag.ToString(), FileMode.Open, FileAccess.Read)) pb.Image = Image.FromStream(fs2); }
-                        catch { }
-                        big.Controls.Add(pb);
-                        using (big) big.ShowDialog();
-                    };
-                    flow.Controls.Add(box);
-                }
-                f.Controls.Add(flow);
-                using (f) f.ShowDialog();
+                Extents2d r = _items[i].WindowWcs;
+                x0 = Math.Min(x0, r.MinPoint.X); y0 = Math.Min(y0, r.MinPoint.Y);
+                x1 = Math.Max(x1, r.MaxPoint.X); y1 = Math.Max(y1, r.MaxPoint.Y);
             }
-            catch (Exception ex) { Ui.Warn("预览失败：" + ex.Message); }
+            if (x1 <= x0 || y1 <= y0) { Ui.Warn("选中行没有有效的图框范围"); return; }
+            double mx = (x1 - x0) * 0.05, my = (y1 - y0) * 0.05;
+            Extents2d view = new Extents2d(x0 - mx, y0 - my, x1 + mx, y1 + my);
+
+            using (Ui.StartInteraction(this))
+            {
+                AcadUtil.ZoomToRect(view);
+                AcadUtil.Say("已定位到选中图框（" + idx.Count + " 张），可平移 / 缩放查看；按回车返回清单");
+                PromptStringOptions pso = new PromptStringOptions("\n已定位到选中图框，可平移/缩放查看，按回车返回清单: ");
+                pso.AllowSpaces = true;
+                try { AcadUtil.Ed.GetString(pso); }
+                catch (Exception ex) { Logger.Verbose("预览返回失败：" + ex.Message); }
+            }
+            // 回到清单：数据都在 _items 里，刷新一次并恢复选中行
+            RefreshGrid();
+            foreach (int i in idx)
+                if (i >= 0 && i < _grid.Rows.Count) _grid.Rows[i].Selected = true;
         }
 
         private void ShowStat()
