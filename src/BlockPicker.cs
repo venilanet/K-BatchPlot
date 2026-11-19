@@ -18,7 +18,10 @@ namespace MPlot
     /// 所以每个动态块都拿参照自身的显示范围（GeometricExtents）交叉核对：
     /// 定义法面积超过显示法 2 倍就只标「边界异常」不丢弃，窗口仍用定义法的大框
     /// （宁可多留白边，也绝不静默裁切），等真机实测后再定要不要收紧。
-    /// 点取范围/锚点细化是 Scan 路径的机制，本路径暂不套用——点选行仍可在清单里手动改。
+    /// 点取范围/锚点细化与 Scan 共用同一套机制（FrameScanner.ApplyRegionAnchor）：用户在
+    /// 图框库里框选过图号/图名范围或点取过锚点的，点选时也按每张图框的实际包围盒换算回
+    /// WCS 读当前图的文字，相对坐标与比例无关；读不到才保留属性值。第八轮之前本路径
+    /// 不套用这套机制，框选的范围白框了（属性里带 J 的旧值一直赢），已修复。
     /// </summary>
     public static class BlockPicker
     {
@@ -112,6 +115,13 @@ namespace MPlot
                     }
 
                     SheetMeta meta = AttrReader.Read(br, tr, fc, wcs, cfg.TitleBarTextFallback);
+
+                    // 区域/锚点细化（与 Scan 同一套，见 FrameScanner.ApplyRegionAnchor）：
+                    // 用户在图框库里框选过图号/图名范围或点取过锚点的，按每张图框的实际包围盒
+                    // 换算回 WCS 读当前图的文字。相对坐标与比例无关，同一图框 1:100、1:150
+                    // 读的都是同一相对位置；读不到才保留属性值。以前本路径不套用这套机制，
+                    // 框选的范围白框了，属性里带 J 的旧值就一直赢——第八轮已改。
+                    FrameScanner.ApplyRegionAnchor(fc, wcs, meta, fc.HasDnAnchor, fc.HasTtAnchor);
 
                     bool paperAuto = false;
                     // 只有实测尺寸有效时才按尺寸定纸张；取不到框的行保持原纸张（临时条目为空），

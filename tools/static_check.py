@@ -1014,6 +1014,49 @@ def check_round7():
     return checks, issues
 
 
+def check_round8():
+    """2026-11-19 第八轮（真机反馈：框选了图号范围，点选图框仍读出带 J 的图号；
+    1:150 的 D-SM 图号错、1:100 的 D-XT 图号对）的防回退规则。
+    根因：BlockPicker 点选路径根本不套用区域/锚点细化，只读块属性，属性里带 J 的
+    旧值一直赢；区域读值同分时靠遍历顺序定胜负。修：把 Scan 的区域/锚点细化抽成
+    共用方法 ApplyRegionAnchor，两路都用；区域同分取离中心更近者；细化过程写日志。grep 级别。"""
+    checks, issues = [], []
+
+    def read(rel):
+        pp = os.path.join(ROOT, rel)
+        return open(pp, encoding="utf-8-sig").read() if os.path.isfile(pp) else ""
+
+    scanner = read("src/FrameScanner.cs")
+    picker = read("src/BlockPicker.cs")
+    reader = read("src/AttrReader.cs")
+
+    if "internal static void ApplyRegionAnchor" in scanner:
+        checks.append("区域/锚点细化已抽成 Scan 与点选共用的 ApplyRegionAnchor")
+    else:
+        issues.append("第八轮回退：ApplyRegionAnchor 共用方法缺失")
+    if "ApplyRegionAnchor(fc, wcs, meta, dnAnchorManual, ttAnchorManual)" in scanner:
+        checks.append("Scan 调用共用细化（相对坐标，与比例无关）")
+    else:
+        issues.append("第八轮回退：Scan 未调用共用细化")
+    if "FrameScanner.ApplyRegionAnchor(fc, wcs, meta" in picker:
+        checks.append("点选图框调用共用细化（框选的范围不再白框）")
+    else:
+        issues.append("第八轮回退：点选路径不调用区域/锚点细化，框选范围仍无效")
+    if "暂不套用" not in picker:
+        checks.append("点选类注释已去掉「暂不套用」")
+    else:
+        issues.append("第八轮回退：点选类注释仍写「暂不套用」")
+    if "dNew < dOld" in reader and "区域中心" in reader:
+        checks.append("区域读值同分取离区域中心更近者（防同分靠遍历顺序定胜负）")
+    else:
+        issues.append("第八轮回退：区域读值缺同分决胜")
+    if "图号细化" in scanner:
+        checks.append("细化过程写日志（属性值→最终值→来源，可供复查）")
+    else:
+        issues.append("第八轮回退：细化过程无日志，下次再出 J 无凭据")
+    return checks, issues
+
+
 def main():
     tree = ET.parse(CSPROJ)
     listed = sorted(e.attrib["Include"].replace("\\", "/") for e in tree.findall(".//m:Compile", NS))
@@ -1188,7 +1231,14 @@ def main():
     for i in r7_issues:
         print("  [X] " + i)
 
-    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues or r7_issues)
+    print("\n--- 第八轮防回退自检（点选图框不用框选范围 / 区域同分）---")
+    r8_checks, r8_issues = check_round8()
+    for c in r8_checks:
+        print("  " + c)
+    for i in r8_issues:
+        print("  [X] " + i)
+
+    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues or r7_issues or r8_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
     print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")

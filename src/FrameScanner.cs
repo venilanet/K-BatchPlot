@@ -224,132 +224,10 @@ namespace MPlot
                         bool rotated = NeedsRotation(wMm, hMm, fc.Paper, cfg.RotateToBestFit);
 
                         SheetMeta meta = AttrReader.Read(br, tr, fc, wcs, cfg.TitleBarTextFallback);
-                        // 若图框库里点取过图号/图名范围，或本批已学到锚点，按每张图框的实际包围盒
-                        // 换算出 WCS 区域读当前图的文字。区域/锚点读取优先于属性读取（位置是明确指定的），
-                        // 仍读不到才保留属性值。人工锚点来源标「点选确认」，本批学到的锚点标「自动定位」。
-                        if (fc.HasDrawNoRegion || fc.HasTitleRegion || fc.HasDnAnchor || fc.HasTtAnchor)
-                        {
-                            double fw = x1 - x0, fh = y1 - y0;
-                            // 图号：优先按锚点找最近文字（最准），读不到再回退到区域内打分猜。
-                            if (fc.HasDrawNoRegion || fc.HasDnAnchor)
-                            {
-                                string v = "";
-                                bool fromAnchor = false;
-                                if (fc.HasDnAnchor)
-                                {
-                                    // 有人工区域时按区域尺寸定容差；只有学到的锚点时取图框较大边的 3%
-                                    double tol = fc.HasDrawNoRegion
-                                        ? Math.Max(Math.Abs(fc.DnX1 - fc.DnX0) * fw,
-                                                   Math.Abs(fc.DnY1 - fc.DnY0) * fh) * 1.5 + 50
-                                        : Math.Max(fw, fh) * 0.03;
-                                    double nearestDist;
-                                    v = AttrReader.ReadAtNearestDetailed(x0 + fc.DnAnchorX * fw,
-                                        y0 + fc.DnAnchorY * fh, tol, true, out nearestDist);
-                                    // 锚点离最近文字太远 → 同名图块在另一张图里标题栏布局变了，
-                                    // 锚点已失效：不信任读到的值，清空后走区域/属性回退。
-                                    if (!string.IsNullOrEmpty(v) && nearestDist > Math.Max(tol * 0.25, 50))
-                                    {
-                                        Logger.Verbose("锚点失效：图号锚点离最近文字 "
-                                            + nearestDist.ToString("0") + "（容差 " + tol.ToString("0")
-                                            + "），疑似布局变化，读到的 " + v + " 作废。");
-                                        v = "";
-                                    }
-                                    // 本批学到的锚点（自动定位）只是上一张的位置推测：属性路径已经读到
-                                    // 像样的图号时不覆盖，只在属性没读到或读到的不像图号时补位。
-                                    // 人工点取的锚点（点选确认）永远优先，不受这条限制。
-                                    else if (!string.IsNullOrEmpty(v) && !dnAnchorManual
-                                        && AttrReader.LooksLikeDrawNo(meta.DrawNo))
-                                    {
-                                        Logger.Verbose("锚点跳过：自动定位读到 " + v + "，属性已读到 "
-                                            + meta.DrawNo + "，保留属性值。");
-                                        v = "";
-                                    }
-                                    // 单字不可能是真图号（属性路径已有同样规则）："J" 这类碎片不覆盖已读值，
-                                    // 且要把 v 清空，让后面的区域读值还有机会跑，而不是被碎片堵住。
-                                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
-                                    fromAnchor = !string.IsNullOrEmpty(v);
-                                }
-                                if (string.IsNullOrEmpty(v) && fc.HasDrawNoRegion)
-                                {
-                                    Extents2d r = new Extents2d(x0 + fc.DnX0 * fw, y0 + fc.DnY0 * fh,
-                                                                x0 + fc.DnX1 * fw, y0 + fc.DnY1 * fh);
-                                    v = AttrReader.ReadRegionValue(r, "drawno");
-                                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
-                                }
-                                if (!string.IsNullOrEmpty(v))
-                                {
-                                    meta.DrawNo = v;
-                                    meta.Source = fromAnchor
-                                        ? (dnAnchorManual ? "点选确认" : "自动定位")
-                                        : (fc.HasDrawNoRegion ? "点选确认" : meta.Source);
-                                    if (fromAnchor)
-                                    {
-                                        meta.DrawNoPos = new Point3d(x0 + fc.DnAnchorX * fw,
-                                                                     y0 + fc.DnAnchorY * fh, 0);
-                                        meta.DrawNoFrom = "锚点";
-                                    }
-                                    else if (fc.HasDrawNoRegion)
-                                        meta.DrawNoPos = null; // 区域打分猜的，位置不确定，不拿来学习锚点
-                                }
-                            }
-                            // 图名：同样优先锚点
-                            if (fc.HasTitleRegion || fc.HasTtAnchor)
-                            {
-                                string v = "";
-                                bool fromAnchor = false;
-                                if (fc.HasTtAnchor)
-                                {
-                                    double tol = fc.HasTitleRegion
-                                        ? Math.Max(Math.Abs(fc.TtX1 - fc.TtX0) * fw,
-                                                   Math.Abs(fc.TtY1 - fc.TtY0) * fh) * 1.5 + 50
-                                        : Math.Max(fw, fh) * 0.03;
-                                    double nearestDist;
-                                    v = AttrReader.ReadAtNearestDetailed(x0 + fc.TtAnchorX * fw,
-                                        y0 + fc.TtAnchorY * fh, tol, false, out nearestDist);
-                                    // 同图号锚点：离得太远说明布局变了，不信任；自动定位的锚点在
-                                    // 属性已读到像样图名时不覆盖（"26-56" 这类设计号当图名只有 3 分）。
-                                    if (!string.IsNullOrEmpty(v) && nearestDist > Math.Max(tol * 0.25, 50))
-                                    {
-                                        Logger.Verbose("锚点失效：图名锚点离最近文字 "
-                                            + nearestDist.ToString("0") + "（容差 " + tol.ToString("0")
-                                            + "），疑似布局变化，读到的 " + v + " 作废。");
-                                        v = "";
-                                    }
-                                    else if (!string.IsNullOrEmpty(v) && !ttAnchorManual
-                                        && AttrReader.LooksLikeTitle(meta.Title))
-                                    {
-                                        Logger.Verbose("锚点跳过：自动定位读到 " + v + "，属性已读到 "
-                                            + meta.Title + "，保留属性值。");
-                                        v = "";
-                                    }
-                                    // 单字不可能是真图名：同图号，碎片不覆盖、且清空后让区域回退能跑。
-                                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
-                                    fromAnchor = !string.IsNullOrEmpty(v);
-                                }
-                                if (string.IsNullOrEmpty(v) && fc.HasTitleRegion)
-                                {
-                                    Extents2d r = new Extents2d(x0 + fc.TtX0 * fw, y0 + fc.TtY0 * fh,
-                                                                x0 + fc.TtX1 * fw, y0 + fc.TtY1 * fh);
-                                    v = AttrReader.ReadRegionValue(r, "title");
-                                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
-                                }
-                                if (!string.IsNullOrEmpty(v))
-                                {
-                                    meta.Title = v;
-                                    meta.Source = fromAnchor
-                                        ? (ttAnchorManual ? "点选确认" : "自动定位")
-                                        : (fc.HasTitleRegion ? "点选确认" : meta.Source);
-                                    if (fromAnchor)
-                                    {
-                                        meta.TitlePos = new Point3d(x0 + fc.TtAnchorX * fw,
-                                                                    y0 + fc.TtAnchorY * fh, 0);
-                                        meta.TitleFrom = "锚点";
-                                    }
-                                    else if (fc.HasTitleRegion)
-                                        meta.TitlePos = null;
-                                }
-                            }
-                        }
+                        // 区域/锚点细化（与点选图框共用，见 ApplyRegionAnchor）：按每张图框的
+                        // 实际包围盒换算出 WCS 区域读当前图的文字；相对坐标与比例无关，
+                        // 同一图框 1:100、1:150 读的都是同一相对位置。
+                        ApplyRegionAnchor(fc, wcs, meta, dnAnchorManual, ttAnchorManual);
 
                         // 学习锚点：本次读到的图号/图名位置（归一化到图框）记下来，供同批后续同名图框用。
                         // 同名图框位置理应一致，只记第一次读到的（后续不再覆盖，避免一张坏图带偏整批）。
@@ -732,6 +610,148 @@ namespace MPlot
                             {
                                 Seq = ++i,
                                 IsGeneralLayout = true,
+        /// <summary>
+        /// 区域/锚点细化（Scan 与点选图框共用）：若图框库里点取过图号/图名范围或锚点，
+        /// 按每张图框的实际包围盒换算出 WCS 区域/锚点读当前图的文字。区域/锚点读取优先于
+        /// 属性读取（位置是用户明确指定的），仍读不到才保留属性值。人工锚点来源标「点选确认」，
+        /// 本批学到的锚点标「自动定位」。wcs 是本张图框的实际包围盒；dnAnchorManual /
+        /// ttAnchorManual 表示锚点是否来自图框库人工点取（是则永远优先，否则是本批学到的，
+        /// 在属性已读到像样值时不覆盖）。
+        /// 区域/锚点是相对图框的归一化坐标（0~1），所以同一图框以 1:100、1:150 插入时
+        /// 读的都是同一相对位置，与比例无关。
+        /// </summary>
+        internal static void ApplyRegionAnchor(FrameEntry fc, Extents2d wcs, SheetMeta meta,
+                                               bool dnAnchorManual, bool ttAnchorManual)
+        {
+            if (fc == null || meta == null) return;
+            if (!fc.HasDrawNoRegion && !fc.HasTitleRegion && !fc.HasDnAnchor && !fc.HasTtAnchor) return;
+            double x0 = wcs.MinPoint.X, y0 = wcs.MinPoint.Y;
+            double fw = wcs.MaxPoint.X - x0, fh = wcs.MaxPoint.Y - y0;
+            if (fw <= 0 || fh <= 0) return;
+            string attrDn = meta.DrawNo ?? "", attrTt = meta.Title ?? "";
+            // 图号：优先按锚点找最近文字（最准），读不到再回退到区域内打分猜。
+            if (fc.HasDrawNoRegion || fc.HasDnAnchor)
+            {
+                string v = "";
+                bool fromAnchor = false;
+                if (fc.HasDnAnchor)
+                {
+                    // 有人工区域时按区域尺寸定容差；只有学到的锚点时取图框较大边的 3%
+                    double tol = fc.HasDrawNoRegion
+                        ? Math.Max(Math.Abs(fc.DnX1 - fc.DnX0) * fw,
+                                   Math.Abs(fc.DnY1 - fc.DnY0) * fh) * 1.5 + 50
+                        : Math.Max(fw, fh) * 0.03;
+                    double nearestDist;
+                    v = AttrReader.ReadAtNearestDetailed(x0 + fc.DnAnchorX * fw,
+                        y0 + fc.DnAnchorY * fh, tol, true, out nearestDist);
+                    // 锚点离最近文字太远 → 同名图块在另一张图里标题栏布局变了，
+                    // 锚点已失效：不信任读到的值，清空后走区域/属性回退。
+                    if (!string.IsNullOrEmpty(v) && nearestDist > Math.Max(tol * 0.25, 50))
+                    {
+                        Logger.Verbose("锚点失效：图号锚点离最近文字 "
+                            + nearestDist.ToString("0") + "（容差 " + tol.ToString("0")
+                            + "），疑似布局变化，读到的 " + v + " 作废。");
+                        v = "";
+                    }
+                    // 本批学到的锚点（自动定位）只是上一张的位置推测：属性路径已经读到
+                    // 像样的图号时不覆盖，只在属性没读到或读到的不像图号时补位。
+                    // 人工点取的锚点（点选确认）永远优先，不受这条限制。
+                    else if (!string.IsNullOrEmpty(v) && !dnAnchorManual
+                        && AttrReader.LooksLikeDrawNo(meta.DrawNo))
+                    {
+                        Logger.Verbose("锚点跳过：自动定位读到 " + v + "，属性已读到 "
+                            + meta.DrawNo + "，保留属性值。");
+                        v = "";
+                    }
+                    // 单字不可能是真图号（属性路径已有同样规则）："J" 这类碎片不覆盖已读值，
+                    // 且要把 v 清空，让后面的区域读值还有机会跑，而不是被碎片堵住。
+                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
+                    fromAnchor = !string.IsNullOrEmpty(v);
+                }
+                if (string.IsNullOrEmpty(v) && fc.HasDrawNoRegion)
+                {
+                    Extents2d r = new Extents2d(x0 + fc.DnX0 * fw, y0 + fc.DnY0 * fh,
+                                                x0 + fc.DnX1 * fw, y0 + fc.DnY1 * fh);
+                    v = AttrReader.ReadRegionValue(r, "drawno");
+                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
+                }
+                if (!string.IsNullOrEmpty(v))
+                {
+                    meta.DrawNo = v;
+                    meta.Source = fromAnchor
+                        ? (dnAnchorManual ? "点选确认" : "自动定位")
+                        : (fc.HasDrawNoRegion ? "点选确认" : meta.Source);
+                    if (fromAnchor)
+                    {
+                        meta.DrawNoPos = new Point3d(x0 + fc.DnAnchorX * fw,
+                                                     y0 + fc.DnAnchorY * fh, 0);
+                        meta.DrawNoFrom = "锚点";
+                    }
+                    else if (fc.HasDrawNoRegion)
+                        meta.DrawNoPos = null; // 区域打分猜的，位置不确定，不拿来学习锚点
+                }
+            }
+            // 图名：同样优先锚点
+            if (fc.HasTitleRegion || fc.HasTtAnchor)
+            {
+                string v = "";
+                bool fromAnchor = false;
+                if (fc.HasTtAnchor)
+                {
+                    double tol = fc.HasTitleRegion
+                        ? Math.Max(Math.Abs(fc.TtX1 - fc.TtX0) * fw,
+                                   Math.Abs(fc.TtY1 - fc.TtY0) * fh) * 1.5 + 50
+                        : Math.Max(fw, fh) * 0.03;
+                    double nearestDist;
+                    v = AttrReader.ReadAtNearestDetailed(x0 + fc.TtAnchorX * fw,
+                        y0 + fc.TtAnchorY * fh, tol, false, out nearestDist);
+                    // 同图号锚点：离得太远说明布局变了，不信任；自动定位的锚点在
+                    // 属性已读到像样图名时不覆盖（"26-56" 这类设计号当图名只有 3 分）。
+                    if (!string.IsNullOrEmpty(v) && nearestDist > Math.Max(tol * 0.25, 50))
+                    {
+                        Logger.Verbose("锚点失效：图名锚点离最近文字 "
+                            + nearestDist.ToString("0") + "（容差 " + tol.ToString("0")
+                            + "），疑似布局变化，读到的 " + v + " 作废。");
+                        v = "";
+                    }
+                    else if (!string.IsNullOrEmpty(v) && !ttAnchorManual
+                        && AttrReader.LooksLikeTitle(meta.Title))
+                    {
+                        Logger.Verbose("锚点跳过：自动定位读到 " + v + "，属性已读到 "
+                            + meta.Title + "，保留属性值。");
+                        v = "";
+                    }
+                    // 单字不可能是真图名：同图号，碎片不覆盖、且清空后让区域回退能跑。
+                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
+                    fromAnchor = !string.IsNullOrEmpty(v);
+                }
+                if (string.IsNullOrEmpty(v) && fc.HasTitleRegion)
+                {
+                    Extents2d r = new Extents2d(x0 + fc.TtX0 * fw, y0 + fc.TtY0 * fh,
+                                                x0 + fc.TtX1 * fw, y0 + fc.TtY1 * fh);
+                    v = AttrReader.ReadRegionValue(r, "title");
+                    if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
+                }
+                if (!string.IsNullOrEmpty(v))
+                {
+                    meta.Title = v;
+                    meta.Source = fromAnchor
+                        ? (ttAnchorManual ? "点选确认" : "自动定位")
+                        : (fc.HasTitleRegion ? "点选确认" : meta.Source);
+                    if (fromAnchor)
+                    {
+                        meta.TitlePos = new Point3d(x0 + fc.TtAnchorX * fw,
+                                                    y0 + fc.TtAnchorY * fh, 0);
+                        meta.TitleFrom = "锚点";
+                    }
+                    else if (fc.HasTitleRegion)
+                        meta.TitlePos = null;
+                }
+            }
+            Logger.Verbose("图号细化：属性图号=" + attrDn + " 最终图号=" + meta.DrawNo
+                + "；属性图名=" + attrTt + " 最终图名=" + meta.Title + "；来源=" + meta.Source);
+        }
+
                                 LayoutId = de.Value,
                                 LayoutName = de.Key,
                                 BlockName = de.Key,

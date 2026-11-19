@@ -614,6 +614,16 @@ namespace MPlot
                 else if (p == "rev") score = ScoreValueAsRev(s);
                 else score = Math.Max(ScoreValueAsDrawNo(s), ScoreValueAsTitle(s));  // auto
                 if (score > bestScore) { bestScore = score; best = s; bestTuple = t; }
+                else if (score == bestScore && bestTuple != null)
+                {
+                    // 同分时取离区域中心更近的那段：用户框的是位置，中心处的文字最可能是目标。
+                    // 防「D-SM1」与属性里残留的「D-SM1J」同分时靠遍历顺序定胜负。
+                    double cx = (region.MinPoint.X + region.MaxPoint.X) / 2;
+                    double cy = (region.MinPoint.Y + region.MaxPoint.Y) / 2;
+                    double dNew = (t.Item2.X - cx) * (t.Item2.X - cx) + (t.Item2.Y - cy) * (t.Item2.Y - cy);
+                    double dOld = (bestTuple.Item2.X - cx) * (bestTuple.Item2.X - cx) + (bestTuple.Item2.Y - cy) * (bestTuple.Item2.Y - cy);
+                    if (dNew < dOld) { best = s; bestTuple = t; }
+                }
             }
             if (bestScore < 3) return "";
             // 图号：最高分的一段再把同行相邻碎片拼上（"J" + "01" → "J-01"），拼完重打分，
