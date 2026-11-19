@@ -242,8 +242,28 @@ namespace MPlot
                                         ? Math.Max(Math.Abs(fc.DnX1 - fc.DnX0) * fw,
                                                    Math.Abs(fc.DnY1 - fc.DnY0) * fh) * 1.5 + 50
                                         : Math.Max(fw, fh) * 0.03;
-                                    v = AttrReader.ReadAtNearest(x0 + fc.DnAnchorX * fw,
-                                                                 y0 + fc.DnAnchorY * fh, tol, true);
+                                    double nearestDist;
+                                    v = AttrReader.ReadAtNearestDetailed(x0 + fc.DnAnchorX * fw,
+                                        y0 + fc.DnAnchorY * fh, tol, true, out nearestDist);
+                                    // 锚点离最近文字太远 → 同名图块在另一张图里标题栏布局变了，
+                                    // 锚点已失效：不信任读到的值，清空后走区域/属性回退。
+                                    if (!string.IsNullOrEmpty(v) && nearestDist > Math.Max(tol * 0.25, 50))
+                                    {
+                                        Logger.Verbose("锚点失效：图号锚点离最近文字 "
+                                            + nearestDist.ToString("0") + "（容差 " + tol.ToString("0")
+                                            + "），疑似布局变化，读到的 " + v + " 作废。");
+                                        v = "";
+                                    }
+                                    // 本批学到的锚点（自动定位）只是上一张的位置推测：属性路径已经读到
+                                    // 像样的图号时不覆盖，只在属性没读到或读到的不像图号时补位。
+                                    // 人工点取的锚点（点选确认）永远优先，不受这条限制。
+                                    else if (!string.IsNullOrEmpty(v) && !dnAnchorManual
+                                        && AttrReader.LooksLikeDrawNo(meta.DrawNo))
+                                    {
+                                        Logger.Verbose("锚点跳过：自动定位读到 " + v + "，属性已读到 "
+                                            + meta.DrawNo + "，保留属性值。");
+                                        v = "";
+                                    }
                                     // 单字不可能是真图号（属性路径已有同样规则）："J" 这类碎片不覆盖已读值，
                                     // 且要把 v 清空，让后面的区域读值还有机会跑，而不是被碎片堵住。
                                     if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
@@ -283,8 +303,25 @@ namespace MPlot
                                         ? Math.Max(Math.Abs(fc.TtX1 - fc.TtX0) * fw,
                                                    Math.Abs(fc.TtY1 - fc.TtY0) * fh) * 1.5 + 50
                                         : Math.Max(fw, fh) * 0.03;
-                                    v = AttrReader.ReadAtNearest(x0 + fc.TtAnchorX * fw,
-                                                                 y0 + fc.TtAnchorY * fh, tol);
+                                    double nearestDist;
+                                    v = AttrReader.ReadAtNearestDetailed(x0 + fc.TtAnchorX * fw,
+                                        y0 + fc.TtAnchorY * fh, tol, false, out nearestDist);
+                                    // 同图号锚点：离得太远说明布局变了，不信任；自动定位的锚点在
+                                    // 属性已读到像样图名时不覆盖（"26-56" 这类设计号当图名只有 3 分）。
+                                    if (!string.IsNullOrEmpty(v) && nearestDist > Math.Max(tol * 0.25, 50))
+                                    {
+                                        Logger.Verbose("锚点失效：图名锚点离最近文字 "
+                                            + nearestDist.ToString("0") + "（容差 " + tol.ToString("0")
+                                            + "），疑似布局变化，读到的 " + v + " 作废。");
+                                        v = "";
+                                    }
+                                    else if (!string.IsNullOrEmpty(v) && !ttAnchorManual
+                                        && AttrReader.LooksLikeTitle(meta.Title))
+                                    {
+                                        Logger.Verbose("锚点跳过：自动定位读到 " + v + "，属性已读到 "
+                                            + meta.Title + "，保留属性值。");
+                                        v = "";
+                                    }
                                     // 单字不可能是真图名：同图号，碎片不覆盖、且清空后让区域回退能跑。
                                     if (!string.IsNullOrEmpty(v) && v.Trim().Length < 2) v = "";
                                     fromAnchor = !string.IsNullOrEmpty(v);

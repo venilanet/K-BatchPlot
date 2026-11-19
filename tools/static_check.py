@@ -917,6 +917,56 @@ def check_round5():
     return checks, issues
 
 
+def check_round6():
+    """2026-11-19 第六轮（真机反馈：图号多余 J / 同名图块另一张 CAD 识别错）的防回退规则。
+    根因：①拼接太积极，把同行分区字母拼进完整图号（"D-XT2" → "JD-XT2"）；
+    ②自动定位的锚点（上一张学到的位置）无条件覆盖属性已读对的值。grep 级别。"""
+    checks, issues = [], []
+
+    def read(rel):
+        p = os.path.join(ROOT, rel)
+        return open(p, encoding="utf-8-sig").read() if os.path.isfile(p) else ""
+
+    scanner = read("src/FrameScanner.cs")
+    reader = read("src/AttrReader.cs")
+
+    # 拼接只补碎片：种子本身已是完整图号时不拼。
+    if "ScoreValueAsDrawNo(best) < 5" in reader and "Length <= 3" in reader:
+        checks.append("拼接只补碎片：区域/锚点两处拼接都要求种子够短或分数够低（完整图号不拼）")
+    else:
+        issues.append("图号回退：拼接缺碎片门槛，完整图号会被拼进同行碎片（\"D-XT2\" → \"JD-XT2\"）")
+    # 锚点拼接拼出来的必须比种子分数更高（等分也不拼）。
+    if "ScoreValueAsDrawNo(merged) > ScoreValueAsDrawNo(best)" in reader:
+        checks.append("锚点拼接要求拼出结果分数严格高于种子（等分也不拼）")
+    else:
+        issues.append("图号回退：锚点拼接未要求分数严格更高，同分污染会漏网")
+    # 锚点读值带距离：ReadAtNearestDetailed 同时返回最近文字到锚点的距离。
+    if "ReadAtNearestDetailed" in reader and "ReadAtNearestDetailed" in scanner:
+        checks.append("锚点读值带距离（ReadAtNearestDetailed），扫描器能判断锚点是否失效")
+    else:
+        issues.append("图号回退：锚点读值不带距离，无法发现同名图块布局变化")
+    # 锚点离最近文字太远时不信任（容差的 25%）。
+    if "tol * 0.25" in scanner:
+        checks.append("锚点离最近文字超过容差 25% 时作废，走区域/属性回退")
+    else:
+        issues.append("图号回退：锚点无距离失效判断，布局变了仍会拿远处文字硬凑")
+    # 自动定位的锚点不覆盖属性已读好的值；人工点取的锚点永远优先。
+    if "LooksLikeDrawNo(meta.DrawNo)" in scanner and "!dnAnchorManual" in scanner:
+        checks.append("自动定位锚点在属性已读到像样图号时不覆盖（人工锚点不受限）")
+    else:
+        issues.append("图号回退：自动定位锚点会覆盖属性已读对的图号")
+    if "LooksLikeTitle(meta.Title)" in scanner and "!ttAnchorManual" in scanner:
+        checks.append("自动定位锚点在属性已读到像样图名时不覆盖（人工锚点不受限）")
+    else:
+        issues.append("图号回退：自动定位锚点会覆盖属性已读对的图名")
+    # 锚点失效/跳过时写日志（%APPDATA%\\MPlot\\logs），下次复现能定位。
+    if "锚点失效" in scanner and "图号拼接" in reader:
+        checks.append("锚点失效、锚点跳过、图号拼接都写日志")
+    else:
+        issues.append("图号回退：锚点失效/拼接缺日志，下次复现无法定位")
+    return checks, issues
+
+
 def main():
     tree = ET.parse(CSPROJ)
     listed = sorted(e.attrib["Include"].replace("\\", "/") for e in tree.findall(".//m:Compile", NS))
@@ -1077,7 +1127,14 @@ def main():
     for i in r5_issues:
         print("  [X] " + i)
 
-    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues)
+    print("\n--- 第六轮防回退自检（图号多余 J / 同名图块跨 CAD 锚点失效）---")
+    r6_checks, r6_issues = check_round6()
+    for c in r6_checks:
+        print("  " + c)
+    for i in r6_issues:
+        print("  [X] " + i)
+
+    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
     print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")

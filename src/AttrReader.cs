@@ -370,6 +370,18 @@ namespace MPlot
             return 0;
         }
 
+        // 供 FrameScanner 判断「属性路径已读到像样的值」：图号/图名分数达到 5 分即为像样
+        // （单字 0 分；"D-XT2"/"DZ-01" 这类 9 分；"J01" 这类 7 分；"26-56" 当图名只有 3 分）。
+        internal static bool LooksLikeDrawNo(string v)
+        {
+            return !string.IsNullOrEmpty(v) && ScoreValueAsDrawNo(v) >= 5;
+        }
+
+        internal static bool LooksLikeTitle(string v)
+        {
+            return !string.IsNullOrEmpty(v) && ScoreValueAsTitle(v) >= 5;
+        }
+
         // ---------------------------------------------------------------- 按配置读值
         public static SheetMeta Read(BlockReference br, Transaction tr, FrameEntry cfg,
                                      Extents2d? frameWcs, bool allowTextFallback)
@@ -606,7 +618,10 @@ namespace MPlot
             if (bestScore < 3) return "";
             // 图号：最高分的一段再把同行相邻碎片拼上（"J" + "01" → "J-01"），拼完重打分，
             // 拼出来的更好就用拼出来的；拼坏了（分数更低）仍用原来那段。
-            if (p == "drawno" && bestTuple != null)
+            // 拼接只补碎片：种子本身已是完整图号（够长且分数够高）时不拼——否则会把同行
+            // 的分区字母、标签碎片拼进真图号（"D-XT2" → "JD-XT2"，"D-SM1" → "D-SM1J"）。
+            if (p == "drawno" && bestTuple != null
+                && (best.Trim().Length <= 3 || ScoreValueAsDrawNo(best) < 5))
             {
                 double rectW = region.MaxPoint.X - region.MinPoint.X;
                 double rectH = region.MaxPoint.Y - region.MinPoint.Y;
@@ -645,10 +660,22 @@ namespace MPlot
         /// </summary>
         public static string ReadAtNearest(double x, double y, double tol)
         {
-            return ReadAtNearest(x, y, tol, false);
+            double dist;
+            return ReadAtNearestDetailed(x, y, tol, false, out dist);
         }
 
         public static string ReadAtNearest(double x, double y, double tol, bool mergeFragments)
+        {
+            double dist;
+            return ReadAtNearestDetailed(x, y, tol, mergeFragments, out dist);
+        }
+
+        /// <summary>
+        /// ReadAtNearest 的完整版：同时返回最近文字中心到锚点的距离 dist（欧氏距离）。
+        /// 扫描器用它判断锚点是否还指着原来的格子：离得太远说明同名图块在另一张图里
+        /// 标题栏布局变了，锚点已失效，读到的值不能信。找不到文字时 dist 为 double.MaxValue。
+        /// </summary>
+        public static string ReadAtNearestDetailed(double x, double y, double tol, bool mergeFragments, out double dist)
         {
             if (tol <= 0) tol = 500;
             List<Tuple<string, Point3d>> texts = ScanTextsInRect(x - tol, y - tol, x + tol, y + tol);
@@ -661,10 +688,21 @@ namespace MPlot
                 double d = dx * dx + dy * dy;
                 if (d < bestDist) { bestDist = d; best = t.Item1; bestTuple = t; }
             }
-            if (mergeFragments && bestTuple != null && Cjk.Matches(best).Count == 0)
+            dist = bestTuple == null ? double.MaxValue : Math.Sqrt(bestDist);
+            Logger.Verbose("锚点读值：中心=(" + x.ToString("0") + "," + y.ToString("0")
+                + ") 容差=" + tol.ToString("0") + " 最近=" + best + " 距离=" + dist.ToString("0"));
+            // 拼接只补碎片（与 ReadRegionValue 同规则）：种子本身已是完整图号时不拼，
+            // 且拼出来的必须比种子分数更高（等分也不拼，防止 "D-XT2" 被拼成 "JD-XT2"）。
+            if (mergeFragments && bestTuple != null && Cjk.Matches(best).Count == 0
+                && (best.Trim().Length <= 3 || ScoreValueAsDrawNo(best) < 5))
             {
                 string merged = MergeDrawNoLine(texts, bestTuple, tol * 0.05, tol * 0.3);
-                if (!string.IsNullOrEmpty(merged) && merged.Trim().Length >= 2) return merged;
+                if (!string.IsNullOrEmpty(merged) && merged.Trim().Length >= 2
+                    && ScoreValueAsDrawNo(merged) > ScoreValueAsDrawNo(best))
+                {
+                    Logger.Verbose("图号拼接：种子=" + best + " → " + merged);
+                    return merged;
+                }
             }
             return best;
         }
