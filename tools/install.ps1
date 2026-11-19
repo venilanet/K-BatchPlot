@@ -512,6 +512,9 @@ try {
 catch {
     Die ('复制 MPlot.dll 失败：' + $_.Exception.Message + '  —— 请先完全关闭 AutoCAD / 天正再重跑本安装器。')
 }
+# 第七轮：删掉一键卸载留下的磁盘已卸载标志（%APPDATA%\MPlot\uninstalled.flag），
+# 否则重装后插件仍认为已卸载、菜单不重建。文件不存在时静默跳过。
+try { Remove-Item -LiteralPath (Join-Path $env:APPDATA 'MPlot\uninstalled.flag') -Force -ErrorAction Stop } catch { }
 
 foreach ($f in @('README.md', 'CHANGELOG.md')) {
     $p = Join-Path $Root $f

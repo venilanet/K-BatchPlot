@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Text;
 using AcApp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace MPlot
@@ -40,19 +42,75 @@ namespace MPlot
         /// 只屏蔽本次 CAD 会话；下次启动 CAD 时是新进程，标志归零（若 .bundle 还在则正常加载）。</summary>
         private static bool _uninstalled;
 
-        public static bool Uninstalled { get { return _uninstalled; } }
+        // 磁盘已卸载标志（%APPDATA%\MPlot\uninstalled.flag）：MP_UNINSTALL 写盘，
+        // 一键安装时安装器删掉。光靠内存标志不够——重启 CAD 是新进程，标志归零，
+        // 若 .bundle 改名失败（Program Files 非提权）插件仍会加载、菜单又建回来。
+        // 磁盘标志让重启后的插件也认得「已卸载」，菜单绝不重建，并顺手把 CUI 里
+        // 残留的菜单摘掉。只读一次（首次访问 Uninstalled / EnsureMenu 时）。
+        private static bool _diskFlagChecked;
+        private static bool _flagCleanupDone;
+
+        private static string UninstalledFlagPath()
+        {
+            try { return Path.Combine(FrameLibrary.EnsureDir(), "uninstalled.flag"); }
+            catch { return ""; }
+        }
+
+        /// <summary>写磁盘已卸载标志（尽力而为，写失败不报错）。</summary>
+        public static void SetUninstalledFlag()
+        {
+            try
+            {
+                string p = UninstalledFlagPath();
+                if (!string.IsNullOrEmpty(p))
+                    File.WriteAllText(p, "uninstalled " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                        new UTF8Encoding(false));
+            }
+            catch { }
+        }
+
+        private static void ReadDiskFlagOnce()
+        {
+            if (_diskFlagChecked) return;
+            _diskFlagChecked = true;
+            string p = UninstalledFlagPath();
+            if (!string.IsNullOrEmpty(p))
+            {
+                try { if (File.Exists(p)) _uninstalled = true; } catch { }
+            }
+        }
+
+        public static bool Uninstalled
+        {
+            get
+            {
+                ReadDiskFlagOnce();
+                return _uninstalled;
+            }
+        }
 
         /// <summary>一键卸载时调用：记下本会话已卸载，并把菜单已创建标志清掉。</summary>
         public static void MarkUninstalled()
         {
             _uninstalled = true;
             _ok = false;
+            SetUninstalledFlag();
         }
 
         public static bool EnsureMenu()
         {
             if (_ok) return true;
-            if (_uninstalled) return false;   // 已卸载：绝不自动重建（否则删完点确定又弹回来）
+            if (Uninstalled)
+            {
+                // 已卸载：绝不重建；顺手把 CUI 里残留的菜单摘掉（只做一次），
+                // 否则 CUI 记住的菜单在重启后还会出现。
+                if (!_flagCleanupDone)
+                {
+                    _flagCleanupDone = true;
+                    try { RemoveMenu(); } catch { }
+                }
+                return false;
+            }
             try
             {
                 AcadUtil.EnsureMenuBarVisible();

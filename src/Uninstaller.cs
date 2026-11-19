@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -54,7 +55,7 @@ namespace MPlot
             if (menuOk)
             {
                 sb.AppendLine("· 注意：菜单可能已保存在 CUI 文件里；若重启 CAD 后它又出现，请在 CUI 里删除并保存工作空间。");
-                sb.AppendLine("· 本次会话内菜单不会再自动出现（已屏蔽自动重建）。");
+                sb.AppendLine("· 本次会话内菜单不会再自动出现（已屏蔽自动重建，并已写入磁盘标记，重启 CAD 也不重建）。");
             }
 
             // 2) 定位本 DLL 与 .bundle 安装目录
@@ -84,6 +85,26 @@ namespace MPlot
                 try { Directory.Move(bundleDir, disabledDir); renamed = true; }
                 catch (Exception ex) { Logger.Warn("卸载改名失败：" + ex.Message); }
 
+                // 提权重试：Program Files 下的改名在非提权 CAD 里注定失败，改名失败是
+                // 「重启后菜单又出现」的头号原因。写一个临时 bat，用 runas 提权跑一次
+                // （会弹 UAC，跑之前先在命令行提醒用户点「是」），同步等它跑完再看结果。
+                // CAD 已提权时改名失败不是权限问题，不弹无意义的 UAC。
+                bool elevatedTried = false;
+                if (!renamed && !elevated)
+                {
+                    elevatedTried = true;
+                    AcadUtil.Say("卸载需要管理员权限：即将弹出 UAC 窗口，请点「是」以完成安装目录改名…");
+                    if (TryElevatedRename(bundleDir, disabledDir))
+                    {
+                        renamed = true;
+                        Logger.Info("卸载提权改名成功：" + disabledDir);
+                    }
+                    else
+                    {
+                        sb.AppendLine("· 提权改名未成功（可能点了 UAC 的「否」，或账号无管理员权限）。");
+                    }
+                }
+
                 if (renamed)
                 {
                     sb.AppendLine("· 安装目录已改名停用，下次启动 CAD 不再加载：");
@@ -103,9 +124,13 @@ namespace MPlot
                 }
                 else
                 {
-                    sb.AppendLine("· 安装目录改名失败（可能是 Program Files 权限不足）。");
+                    sb.AppendLine(elevatedTried
+                        ? "· 安装目录改名失败（直接改名与提权改名都失败了）。"
+                        : "· 安装目录改名失败（可能是 Program Files 权限不足）。");
                     sb.AppendLine("· 请关闭 CAD 后右键「卸载.bat」→ 以管理员身份运行，或手动删除：");
                     sb.AppendLine("  " + bundleDir);
+                    sb.AppendLine("· 提示：磁盘已卸载标记仍在，重启 CAD 后菜单不会自动重建"
+                                  + "（重装时安装器会自动清除该标记）。");
                 }
             }
 
@@ -120,6 +145,44 @@ namespace MPlot
             sb.AppendLine("· 图框库、设置与日志（%APPDATA%\\MPlot）已保留，重装后可继续用。");
             sb.AppendLine("· 本次 CAD 会话里命令仍可用，关闭 CAD 后彻底生效。");
             return sb.ToString();
+        }
+
+        /// <summary>提权重试改名：把 move 命令写进 %TEMP% 的临时 bat，用 runas 提权跑一次。
+        /// 只在 CAD 未提权且直接改名失败时调用。同步等最多 60 秒（UAC 等用户点），
+        /// 跑完看 bundle 目录是否还在——在就是失败（点了「否」/无管理员权限/超时），
+        /// 不在就是成功。bat 用 GBK 写（路径可能含中文用户名），跑完自删。</summary>
+        private static bool TryElevatedRename(string bundleDir, string disabledDir)
+        {
+            string bat = "";
+            try
+            {
+                bat = Path.Combine(Path.GetTempPath(), "MPlot_elevated_uninstall.bat");
+                Encoding batEnc;
+                try { batEnc = Encoding.GetEncoding(936); }
+                catch { batEnc = new UTF8Encoding(false); }
+                File.WriteAllText(bat,
+                    "@echo off\r\n"
+                    + "move /Y \"" + bundleDir + "\" \"" + disabledDir + "\"\r\n"
+                    + "del \"%~f0\"\r\n", batEnc);
+                ProcessStartInfo psi = new ProcessStartInfo();
+                psi.FileName = "cmd.exe";
+                psi.Arguments = "/c \"" + bat + "\"";
+                psi.Verb = "runas";
+                psi.UseShellExecute = true;
+                psi.WindowStyle = ProcessWindowStyle.Hidden;
+                Process p = Process.Start(psi);
+                if (p != null) p.WaitForExit(60000);
+                return !Directory.Exists(bundleDir);
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn("提权改名失败：" + ex.Message);
+                return false;
+            }
+            finally
+            {
+                try { if (!string.IsNullOrEmpty(bat) && File.Exists(bat)) File.Delete(bat); } catch { }
+            }
         }
 
         /// <summary>从 DLL 所在位置向上找 *.bundle 目录（DLL 在 &lt;bundle&gt;\Contents\ 下）。找不到返回 ""。</summary>

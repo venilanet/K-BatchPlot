@@ -902,7 +902,8 @@ def check_round5():
         issues.append("卡顿回退：MP_FRAME 扫描无进度提示")
 
     # 卸载菜单复活：已卸载标志屏蔽 Idle/切图/MP_MENU 重建。
-    if "MarkUninstalled" in menu and "if (_uninstalled) return false" in menu:
+    # 第七轮起守卫走 Uninstalled 属性（含磁盘标志），旧的字面量写法也认。
+    if "MarkUninstalled" in menu and ("if (_uninstalled) return false" in menu or "if (Uninstalled)" in menu):
         checks.append("MenuBuilder 有已卸载标志，EnsureMenu 在已卸载时拒绝重建")
     else:
         issues.append("卸载回退：MenuBuilder 缺已卸载标志，Idle 事件会把菜单建回来")
@@ -964,6 +965,52 @@ def check_round6():
         checks.append("锚点失效、锚点跳过、图号拼接都写日志")
     else:
         issues.append("图号回退：锚点失效/拼接缺日志，下次复现无法定位")
+    return checks, issues
+
+
+def check_round7():
+    """2026-11-19 第七轮（真机反馈：一键卸载后重启 CAD 菜单又出现）的防回退规则。
+    根因：内存已卸载标志只活一个会话；Program Files 下 bundle 改名在非提权 CAD 里
+    注定失败，插件重启照常加载、菜单重建。修：提权重试改名 + 磁盘已卸载标志
+    （重启也认，并清 CUI 残留菜单）+ 安装器重装时删标志。grep 级别。"""
+    checks, issues = [], []
+
+    def read(rel):
+        p = os.path.join(ROOT, rel)
+        return open(p, encoding="utf-8-sig").read() if os.path.isfile(p) else ""
+
+    menu = read("src/MenuBuilder.cs")
+    uninst = read("src/Uninstaller.cs")
+    install = read("tools/install.ps1")
+
+    # 提权重试改名：runas + 同步等结果。
+    if "TryElevatedRename" in uninst and '"runas"' in uninst and "WaitForExit" in uninst:
+        checks.append("卸载改名失败时提权重试（runas + 同步等结果再判定）")
+    else:
+        issues.append("卸载回退：改名失败无提权重试，Program Files 下卸载重启必复活")
+    # 提权重试只在 CAD 未提权时跑；已提权还失败不是权限问题，不弹无意义 UAC。
+    if "TryElevatedRename(bundleDir, disabledDir)" in uninst and "!elevated" in uninst:
+        checks.append("提权重试只在 CAD 未提权时跑（已提权失败不弹 UAC）")
+    else:
+        issues.append("卸载回退：提权重试缺未提权门槛")
+    # 磁盘已卸载标志：写盘 + 读盘 + 重装清除。
+    if "uninstalled.flag" in menu and "SetUninstalledFlag" in menu:
+        checks.append("一键卸载写磁盘已卸载标志（%APPDATA%\\MPlot\\uninstalled.flag）")
+    else:
+        issues.append("卸载回退：一键卸载不写磁盘标志，重启后菜单仍会重建")
+    if "ReadDiskFlagOnce" in menu and "File.Exists(p)" in menu:
+        checks.append("启动时读一次磁盘标志，存在即视为已卸载")
+    else:
+        issues.append("卸载回退：启动时不读磁盘标志，标志写了也白写")
+    if "uninstalled.flag" in install and "Remove-Item" in install:
+        checks.append("安装器重装时删磁盘已卸载标志（否则重装后菜单不重建）")
+    else:
+        issues.append("卸载回退：安装器重装不删磁盘标志，重装后菜单出不来")
+    # 已卸载时顺手清 CUI 残留菜单（只做一次）。
+    if "_flagCleanupDone" in menu and "RemoveMenu()" in menu:
+        checks.append("已卸载时启动顺手清一次 CUI 残留菜单")
+    else:
+        issues.append("卸载回退：已卸载时不清 CUI 残留菜单，CUI 记住的菜单重启还会出现")
     return checks, issues
 
 
@@ -1134,7 +1181,14 @@ def main():
     for i in r6_issues:
         print("  [X] " + i)
 
-    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues)
+    print("\n--- 第七轮防回退自检（卸载后重启菜单复活）---")
+    r7_checks, r7_issues = check_round7()
+    for c in r7_checks:
+        print("  " + c)
+    for i in r7_issues:
+        print("  [X] " + i)
+
+    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues or r7_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
     print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")
