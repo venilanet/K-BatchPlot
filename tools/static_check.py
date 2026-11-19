@@ -186,6 +186,69 @@ def check_flowdirection(code_map):
     return issues
 
 
+# 缺 using（CS0103，2026-11-19 真机编译实证：Plotter.cs 用 Encoding.ASCII 却没引 System.Text）。
+# static_check 原来只查语法与 API 名，查不出「用了类型、没引命名空间」。
+# 只认最稳妥的几种类型位置（new T( / T.静态成员 / catch (T / is|as T / typeof(T / : T 继承 / [T 特性 / T< 泛型），
+# 属性名、方法名、枚举成员名（如 Label、Match、Color）不会误报；Padding 在 WinForms 不在 Drawing。
+USING_RULES = [
+    ("System.Text", ["Encoding", "StringBuilder", "Decoder", "Encoder"]),
+    ("System.Text.RegularExpressions", ["Regex", "Match", "MatchCollection", "Group"]),
+    ("System.Globalization", ["CultureInfo", "NumberStyles", "DateTimeFormatInfo"]),
+    ("System.IO", ["File", "Directory", "Path", "FileStream", "StreamReader", "StreamWriter", "IOException", "FileInfo", "DirectoryInfo", "MemoryStream"]),
+    ("System.Threading", ["Thread", "ThreadStart", "ManualResetEvent", "AutoResetEvent", "Mutex"]),
+    ("System.Reflection", ["Assembly", "MethodInfo", "BindingFlags", "PropertyInfo", "Type"]),
+    ("System.Collections", ["ArrayList", "Hashtable", "Queue", "Stack"]),
+    ("System.Collections.Generic", ["List", "Dictionary", "HashSet", "IEnumerable", "IList", "ICollection", "KeyValuePair", "Queue", "Stack"]),
+    ("System.Collections.Specialized", ["StringCollection", "NameValueCollection", "StringDictionary"]),
+    ("System.Runtime.InteropServices", ["DllImport", "Marshal", "StructLayout", "GCHandle", "Guid"]),
+    ("System.Diagnostics", ["Process", "Stopwatch", "Debug", "Trace"]),
+    ("System.Windows.Forms", ["MessageBox", "Form", "Button", "TextBox", "ComboBox", "CheckBox", "Label", "DataGridView", "FlowLayoutPanel", "Panel", "DialogResult", "OpenFileDialog", "SaveFileDialog", "FolderBrowserDialog", "ToolTip", "Padding", "DockStyle", "AnchorStyles", "DataGridViewCellStyle", "FormStartPosition", "FormBorderStyle", "Keys"]),
+    ("System.Drawing", ["Color", "Font", "Size", "Point", "Bitmap", "Image", "Graphics", "Icon", "Rectangle"]),
+    ("System", ["String", "Math", "DateTime", "Guid", "IDisposable", "EventArgs", "Exception", "Action", "Func", "Random", "Convert", "Environment", "Console", "TimeSpan", "Version", "Uri", "Array", "Enum", "Object"]),
+]
+GENERIC_TYPES = {"List", "Dictionary", "HashSet", "IEnumerable", "IList", "ICollection", "KeyValuePair", "Queue", "Stack"}
+
+
+def _type_used(code, t):
+    pats = [
+        r'new\s+' + t + r'\s*(?:<|[\(\{\[])',   # new T( / new T< / new T{
+        r'(?<![\w.])' + t + r'\s*\.',           # T.静态成员
+        r'catch\s*\(\s*' + t + r'\b',           # catch (T
+        r'\b(?:is|as)\s+' + t + r'\b',          # is T / as T
+        r'typeof\s*\(\s*' + t + r'\b',          # typeof(T
+        r':\s*' + t + r'\b',                    # : T 继承 / 基类
+        r'\[\s*' + t + r'\b',                   # [T 特性
+    ]
+    if t in GENERIC_TYPES:
+        pats.append(r'(?<![\w.])' + t + r'\s*<')  # T< 泛型
+    for p in pats:
+        m = re.search(p, code)
+        if m:
+            return m
+    return None
+
+
+def check_usings(code_map):
+    issues = []
+    type_ns = {}
+    for ns, types in USING_RULES:
+        for t in types:
+            type_ns.setdefault(t, set()).add(ns)
+    for rel, code in code_map.items():
+        imported = set(re.findall(r'^\s*using\s+([\w.]+)\s*;', code, re.M))
+        aliased = set(re.findall(r'^\s*using\s+(\w+)\s*=', code, re.M))
+        for t, nss in sorted(type_ns.items()):
+            if t in aliased:
+                continue
+            if nss & imported:
+                continue
+            m = _type_used(code, t)
+            if m:
+                line = code.count("\n", 0, m.start()) + 1
+                issues.append("%s:%d  缺 using（CS0103）：用到了 %s，却没引 %s" % (rel, line, t, " 或 ".join(sorted(nss))))
+    return issues
+
+
 def check_package():
     """安装包层面的硬检查：一条不满足，用户在 CAD 里就看不到菜单。"""
     issues = []
@@ -671,6 +734,14 @@ def main():
     else:
         print("  未发现 WinForms 与 DatabaseServices 的 FlowDirection 冲突")
 
+    print("\n--- 缺 using（CS0103）---")
+    mu = check_usings(code_map)
+    if mu:
+        for e in mu:
+            print("  [X] " + e)
+    else:
+        print("  常用类型都有对应 using")
+
     # 粗查跨文件静态调用：收集所有方法/属性定义
     defs = set()
     for rel in on_disk:
@@ -732,7 +803,7 @@ def main():
     for i in w7_issues:
         print("  [X] " + i)
 
-    ok = not (missing or unlisted or errors or cs5 or acad or fd or undef or pkg_issues or beh_issues or w7_issues)
+    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
     print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")
