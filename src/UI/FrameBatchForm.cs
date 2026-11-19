@@ -6,10 +6,13 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Windows.Forms;
-using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
 using Extents2d = Autodesk.AutoCAD.DatabaseServices.Extents2d;
+// 注意：不要整段 using Autodesk.AutoCAD.DatabaseServices——它里面也有 FlowDirection，
+// 会和 WinForms 的 FlowDirection 冲突（CS0104；2026-11-19 真机编译已踩过一次）。
+// 需要的类型用别名逐个引（Extents2d / ObjectId）。
+using ObjectId = Autodesk.AutoCAD.DatabaseServices.ObjectId;
 
 namespace MPlot
 {

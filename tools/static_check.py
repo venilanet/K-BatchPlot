@@ -167,6 +167,25 @@ def check_acad2014(code_map, raw_map):
     return sorted(set(issues))
 
 
+# FlowDirection 二义性（CS0104，2026-11-19 真机编译实证）：
+# System.Windows.Forms 和 Autodesk.AutoCAD.DatabaseServices 都有 FlowDirection。
+# 同文件整段 using 两者、又不给 FlowDirection 加别名时，任何一处裸 FlowDirection 都会编译失败。
+# 修法：DatabaseServices 只用别名逐个引（Extents2d / ObjectId，如 FrameBatchForm.cs），
+# 或加 using FlowDirection = System.Windows.Forms.FlowDirection;（FrameLibraryForm.cs 的做法）。
+def check_flowdirection(code_map):
+    issues = []
+    for rel, code in code_map.items():
+        bare_db = re.search(r'^\s*using\s+Autodesk\.AutoCAD\.DatabaseServices\s*;', code, re.M)
+        winforms = re.search(r'^\s*using\s+System\.Windows\.Forms\s*;', code, re.M)
+        alias = re.search(r'^\s*using\s+FlowDirection\s*=', code, re.M)
+        if bare_db and winforms and not alias:
+            for m in re.finditer(r'(?<![\w.])FlowDirection(?![\w])', code):
+                line = code.count("\n", 0, m.start()) + 1
+                issues.append("%s:%d  FlowDirection 二义性（CS0104）：同文件整段 using WinForms 与 DatabaseServices，又未加 FlowDirection 别名 -> DatabaseServices 只用别名逐个引，或加 using FlowDirection = System.Windows.Forms.FlowDirection;" % (rel, line))
+                break  # 每文件只报一次
+    return issues
+
+
 def check_package():
     """安装包层面的硬检查：一条不满足，用户在 CAD 里就看不到菜单。"""
     issues = []
@@ -644,6 +663,14 @@ def main():
     else:
         print("  未写回任何在 2014 上不存在 / 冲突的 API")
 
+    print("\n--- FlowDirection 二义性（CS0104）---")
+    fd = check_flowdirection(code_map)
+    if fd:
+        for e in fd:
+            print("  [X] " + e)
+    else:
+        print("  未发现 WinForms 与 DatabaseServices 的 FlowDirection 冲突")
+
     # 粗查跨文件静态调用：收集所有方法/属性定义
     defs = set()
     for rel in on_disk:
@@ -705,7 +732,7 @@ def main():
     for i in w7_issues:
         print("  [X] " + i)
 
-    ok = not (missing or unlisted or errors or cs5 or acad or undef or pkg_issues or beh_issues or w7_issues)
+    ok = not (missing or unlisted or errors or cs5 or acad or fd or undef or pkg_issues or beh_issues or w7_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
     print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")
