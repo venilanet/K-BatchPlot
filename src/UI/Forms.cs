@@ -116,6 +116,9 @@ namespace MPlot
         private readonly ProgressBar _bar = new ProgressBar { Width = 480, Height = 20 };
         public bool CancelRequested { get; private set; }
 
+        /// <summary>结果窗里点了「重试失败项」/「重新合并」要再跑一轮时，先把上轮的取消状态清掉。</summary>
+        public void ResetCancel() { CancelRequested = false; }
+
         public ProgressForm(string title)
         {
             Text = title; Font = Ui.Font9;
@@ -138,37 +141,76 @@ namespace MPlot
     }
 
     // ================================================================ 结果
+    /// <summary>关闭结果窗后调用方要做的事：无 / 只重试失败项 / 只重跑合并。</summary>
+    public enum ResultAction { None, RetryFailed, Remerge }
+
+    // ================================================================ 结果
     public sealed class ResultForm : Form
     {
+        private readonly BatchResult _r;
+        private readonly DataGridView _grid = new DataGridView();
+        private readonly ComboBox _filter;
+        public ResultAction Action { get; private set; }
+
         public ResultForm(BatchResult r, string title)
         {
+            _r = r;
+            Action = ResultAction.None;
             Text = title + " · 结果"; Font = Ui.Font9;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(620, 430);
+            ClientSize = new Size(880, 520);
             MinimizeBox = false;
 
-            string head = string.Format("成功 {0} 张 / 失败 {1} 张{2}\r\n输出目录：{3}\r\n",
-                r.Success, r.Failed, r.Canceled ? "（已取消）" : "", r.OutputDir);
-            if (!string.IsNullOrEmpty(r.MergedPath)) head += "PDF 合集：" + Path.GetFileName(r.MergedPath) + "\r\n";
-            if (!string.IsNullOrEmpty(r.CsvPath)) head += "图纸目录：" + Path.GetFileName(r.CsvPath) + "\r\n";
-            if (!string.IsNullOrEmpty(r.TableNote)) head += r.TableNote + "\r\n";
-            if (!string.IsNullOrEmpty(r.SummaryFile)) head += "结果清单：" + Path.GetFileName(r.SummaryFile) + "\r\n";
+            Label head = Ui.L("", 0);
+            head.AutoSize = false; head.Width = 860; head.Height = 66; head.Padding = new Padding(10, 8, 10, 0);
+            string h = string.Format("成功 {0} 张 / 失败 {1} 张 / 跳过 {2} 张{3}\r\n输出目录：{4}",
+                r.Success, r.Failed, r.Skipped, r.Canceled ? "（已取消）" : "", r.OutputDir);
+            if (!string.IsNullOrEmpty(r.MergedPath)) h += "\r\nPDF 合集：" + Path.GetFileName(r.MergedPath);
+            else if (r.MergeFailed) h += "\r\nPDF 合集：合并失败（单页 PDF 已保留，可点「重新合并」）";
+            if (!string.IsNullOrEmpty(r.CsvPath)) h += "　　图纸目录：" + Path.GetFileName(r.CsvPath);
+            if (!string.IsNullOrEmpty(r.SummaryFile)) h += "　　结果清单：" + Path.GetFileName(r.SummaryFile);
+            head.Text = h;
 
-            TextBox tb = new TextBox
+            _filter = Ui.D(new[] { "全部", "成功", "失败", "已跳过", "待导出" }, 110, 0);
+            _filter.SelectedIndexChanged += delegate { ApplyFilter(); };
+
+            FlowLayoutPanel top = new FlowLayoutPanel
+            { FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(0, 0, 0, 2) };
+            top.Controls.Add(head);
+            top.Controls.Add(Ui.Row(Ui.L("按状态筛选", 80), _filter,
+                Ui.L("提示：失败项可点下方「重试失败项」，只重出失败的几张；合集失败可点「重新合并」。", 560)));
+
+            _grid.Dock = DockStyle.Fill;
+            _grid.AllowUserToAddRows = false;
+            _grid.RowHeadersVisible = false;
+            _grid.Font = Ui.Font9;
+            _grid.SelectionMode = DataGridViewSelectionMode.FullRowSelect;
+            _grid.ReadOnly = true;
+            _grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
+            _grid.Columns.Add("cNo", "序号"); _grid.Columns["cNo"].Width = 46;
+            _grid.Columns.Add("cDn", "图号"); _grid.Columns["cDn"].Width = 130;
+            _grid.Columns.Add("cTitle", "图名"); _grid.Columns["cTitle"].Width = 200;
+            _grid.Columns.Add("cFile", "文件名"); _grid.Columns["cFile"].Width = 240;
+            _grid.Columns.Add("cStatus", "状态"); _grid.Columns["cStatus"].Width = 70;
+            _grid.Columns.Add("cErr", "错误信息 / 备注"); _grid.Columns["cErr"].Width = 180;
+            FillGrid();
+
+            TextBox warn = new TextBox
             {
-                Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Both,
-                Dock = DockStyle.Fill, Font = new Font("Consolas", 9F), WordWrap = false
+                Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
+                Dock = DockStyle.Bottom, Height = 76, Font = Ui.Font9, WordWrap = true
             };
-            System.Text.StringBuilder sb = new System.Text.StringBuilder(head);
-            foreach (string w in r.Warnings) sb.AppendLine("\r\n[提示] " + w);
-            sb.AppendLine("\r\n---- 逐张结果 ----");
-            foreach (SheetItem s in r.Sheets)
-                sb.AppendLine((s.Plotted ? "[OK]   " : "[FAIL] ") + s.Index.ToString("00") + "  "
-                    + (s.FileStem ?? "") + ".pdf  " + (s.DrawNo ?? "") + "  " + (s.Title ?? "")
-                    + (s.Plotted ? "" : "  → " + (s.Error ?? "")));
-            tb.Text = sb.ToString();
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            foreach (string w in r.Warnings) sb.AppendLine("[提示] " + w);
+            foreach (string f in r.PreviewFailed) sb.AppendLine("[预览失败] " + f);
+            warn.Text = sb.ToString();
 
             FlowLayoutPanel bottom = new FlowLayoutPanel { Dock = DockStyle.Bottom, Height = 46, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(6) };
+            Button retry = Ui.B("重试失败项", delegate { Action = ResultAction.RetryFailed; Close(); }, 120);
+            retry.Enabled = r.Failed > 0;
+            Button remerge = Ui.B("重新合并", delegate { Action = ResultAction.Remerge; Close(); }, 100);
+            remerge.Enabled = r.MergeFailed;
+            Button csv = Ui.B("导出CSV结果清单", delegate { ExportResultCsv(); }, 150);
             Button close = Ui.B("关闭", delegate { Close(); });
             Button open = Ui.B("打开输出目录", delegate
             {
@@ -180,8 +222,79 @@ namespace MPlot
                 try { if (File.Exists(Logger.SessionFile)) Process.Start(Logger.SessionFile); }
                 catch (Exception ex) { Ui.Warn(ex.Message); }
             });
-            bottom.Controls.Add(close); bottom.Controls.Add(open); bottom.Controls.Add(log);
-            Controls.Add(tb); Controls.Add(bottom);
+            bottom.Controls.Add(close); bottom.Controls.Add(csv); bottom.Controls.Add(remerge);
+            bottom.Controls.Add(retry); bottom.Controls.Add(open); bottom.Controls.Add(log);
+            Controls.Add(bottom); Controls.Add(warn); Controls.Add(top); Controls.Add(_grid);
+        }
+
+        private void FillGrid()
+        {
+            _grid.Rows.Clear();
+            foreach (SheetItem s in _r.Sheets)
+            {
+                int row = _grid.Rows.Add(
+                    s.Index.ToString("00"),
+                    s.DrawNo ?? "",
+                    s.Title ?? "",
+                    Naming.FullFileName(s),
+                    SheetStatusNames.Text(s.Status),
+                    s.Status == SheetStatus.Failed || s.Status == SheetStatus.Skipped ? (s.Error ?? "") : "");
+                DataGridViewRow gr = _grid.Rows[row];
+                gr.Tag = s.Status;
+                if (s.Status == SheetStatus.Success) gr.Cells[4].Style.ForeColor = Color.Green;
+                else if (s.Status == SheetStatus.Failed) gr.Cells[4].Style.ForeColor = Color.Red;
+                else if (s.Status == SheetStatus.Skipped) gr.Cells[4].Style.ForeColor = Color.Gray;
+            }
+            ApplyFilter();
+        }
+
+        private void ApplyFilter()
+        {
+            string f = _filter == null ? "全部" : _filter.Text;
+            foreach (DataGridViewRow row in _grid.Rows)
+            {
+                SheetStatus st = row.Tag is SheetStatus ? (SheetStatus)row.Tag : SheetStatus.Pending;
+                bool show = f == "全部"
+                    || (f == "成功" && st == SheetStatus.Success)
+                    || (f == "失败" && st == SheetStatus.Failed)
+                    || (f == "已跳过" && st == SheetStatus.Skipped)
+                    || (f == "待导出" && (st == SheetStatus.Pending || st == SheetStatus.Exporting));
+                row.Visible = show;
+            }
+        }
+
+        private void ExportResultCsv()
+        {
+            SaveFileDialog sfd = new SaveFileDialog
+            {
+                Filter = "CSV 文件 (*.csv)|*.csv",
+                FileName = "导出结果_" + DateTime.Now.ToString("yyyyMMdd_HHmm") + ".csv"
+            };
+            if (DialogResult.OK != sfd.ShowDialog(this)) return;
+            try
+            {
+                System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                sb.Append("\uFEFF");
+                sb.Append("序号,图号,图名,文件名,状态,错误信息,PDF路径\r\n");
+                foreach (SheetItem s in _r.Sheets)
+                {
+                    sb.Append(Csv(s.Index.ToString("00"))).Append(',').Append(Csv(s.DrawNo)).Append(',')
+                      .Append(Csv(s.Title)).Append(',').Append(Csv(Naming.FullFileName(s))).Append(',')
+                      .Append(Csv(SheetStatusNames.Text(s.Status))).Append(',').Append(Csv(s.Error)).Append(',')
+                      .Append(Csv(s.PdfPath)).Append("\r\n");
+                }
+                File.WriteAllText(sfd.FileName, sb.ToString(), new System.Text.UTF8Encoding(true));
+                MessageBox.Show("结果清单已导出：" + sfd.FileName, "导出CSV结果清单", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex) { Ui.Warn("导出失败：" + ex.Message); }
+        }
+
+        private static string Csv(string s)
+        {
+            string v = (s ?? "").Replace("\"", "\"\"");
+            if (v.IndexOf(',') >= 0 || v.IndexOf('"') >= 0 || v.IndexOf('\n') >= 0)
+                v = "\"" + v + "\"";
+            return v;
         }
     }
 
@@ -599,6 +712,9 @@ namespace MPlot
         private readonly List<PlotRequest> _reqs;
         private readonly List<SheetItem> _sheets;
         private readonly List<string> _pngs = new List<string>();
+        private readonly List<int> _failed = new List<int>();
+        private readonly List<string> _failedLabels = new List<string>();
+        private readonly List<string> _pngErrs = new List<string>();
         private readonly FlowLayoutPanel _list = new FlowLayoutPanel
         { FlowDirection = FlowDirection.TopDown, Dock = DockStyle.Left, Width = 190,
           AutoScroll = true, Padding = new Padding(6), BackColor = Color.FromArgb(245, 245, 245) };
@@ -606,15 +722,21 @@ namespace MPlot
         { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.White };
         private readonly Label _info = Ui.L("正在生成预览…", 0);
         private readonly Label _page = Ui.L("", 90);
+        private readonly ProgressBar _prog = new ProgressBar { Width = 900, Height = 14, Dock = DockStyle.Top };
         private int _cur = 0;
-        public bool Confirmed { get; private set; }
+        /// <summary>用户在预览窗里的决定：确认导出 / 取消任务 / 放弃预览并明确确认后直接导出。默认取消。</summary>
+        public PreviewDecision Decision { get; private set; }
+        /// <summary>预览生成失败的图纸（"第 N 张 · 图号 图名：原因"），供引擎记入结果。</summary>
+        public List<string> FailedLabels { get { return _failedLabels; } }
+        public int FailedCount { get { return _failed.Count; } }
 
         public PrintPreviewForm(List<PlotRequest> reqs, List<SheetItem> sheets, string project)
         {
             _reqs = reqs ?? new List<PlotRequest>();
             _sheets = sheets ?? new List<SheetItem>();
+            Decision = PreviewDecision.Canceled;
 
-            Text = "打印前预览" + (string.IsNullOrEmpty(project) ? "" : " · " + project)
+            Text = "导出前预览" + (string.IsNullOrEmpty(project) ? "" : " · " + project)
                    + "（共 " + _reqs.Count + " 张）";
             Font = Ui.Font9;
             StartPosition = FormStartPosition.CenterScreen;
@@ -627,14 +749,17 @@ namespace MPlot
             _info.Dock = DockStyle.Top; _info.Padding = new Padding(6, 4, 6, 0);
             center.Controls.Add(_big);
             center.Controls.Add(_info);
+            center.Controls.Add(_prog);
             _big.BringToFront();
 
             FlowLayoutPanel bottom = new FlowLayoutPanel
             { Dock = DockStyle.Bottom, Height = 46, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(6) };
-            Button ok = Ui.B("确认打印 (" + _reqs.Count + " 张)", delegate { Confirmed = true; Close(); }, 140);
+            Button ok = Ui.B("确认导出 PDF (" + _reqs.Count + " 张)", delegate { ConfirmExport(); }, 160);
             ok.BackColor = Color.FromArgb(28, 92, 156); ok.ForeColor = Color.White; ok.FlatStyle = FlatStyle.Flat;
             bottom.Controls.Add(ok);
-            bottom.Controls.Add(Ui.B("取消", delegate { Confirmed = false; Close(); }, 80));
+            bottom.Controls.Add(Ui.B("不预览，直接导出", delegate { SkipPreview(); }, 130));
+            bottom.Controls.Add(Ui.B("重新生成预览", delegate { BuildPreviews(); }, 120));
+            bottom.Controls.Add(Ui.B("取消", delegate { Decision = PreviewDecision.Canceled; Close(); }, 80));
             bottom.Controls.Add(Ui.B("下一张 ›", delegate { Go(_cur + 1); }, 90));
             bottom.Controls.Add(Ui.B("‹ 上一张", delegate { Go(_cur - 1); }, 90));
             bottom.Controls.Add(_page);
@@ -646,20 +771,99 @@ namespace MPlot
             Shown += delegate { BuildPreviews(); };
         }
 
+        /// <summary>「确认导出 PDF」：有预览失败时先请用户明确确认（列出失败图纸），再导出。</summary>
+        private void ConfirmExport()
+        {
+            if (_failed.Count > 0)
+            {
+                string list = string.Join("\r\n", _failedLabels.Take(5).ToArray());
+                if (_failed.Count > 5) list += "\r\n…等共 " + _failed.Count + " 张";
+                DialogResult r = MessageBox.Show(
+                    "有 " + _failed.Count + " 张图纸预览生成失败：\r\n" + list
+                    + "\r\n\r\n确定不等这几张的预览、直接导出吗？",
+                    "预览未完成", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (r != DialogResult.Yes) return;
+            }
+            Decision = PreviewDecision.Confirmed;
+            Close();
+        }
+
+        /// <summary>「不预览，直接导出」：用户明确放弃预览并确认后才继续导出。</summary>
+        private void SkipPreview()
+        {
+            string tip = _failed.Count > 0
+                ? "有 " + _failed.Count + " 张图纸预览生成失败，确定放弃预览、直接导出吗？"
+                : "确定不检查预览、直接导出 " + _reqs.Count + " 张图纸吗？";
+            DialogResult r = MessageBox.Show(tip + "\r\n（导出后请在输出目录里抽查 PDF。）",
+                "放弃预览", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (r != DialogResult.Yes) return;
+            Decision = PreviewDecision.ContinueWithoutPreview;
+            Close();
+        }
+
+        /// <summary>释放预览图：先释放 PictureBox 持有的图片，再删临时 PNG 文件。</summary>
+        private void DisposeImages()
+        {
+            try { if (_big.Image != null) { _big.Image.Dispose(); _big.Image = null; } } catch { }
+            try
+            {
+                foreach (Control c in _list.Controls)
+                    foreach (Control cc in c.Controls)
+                    {
+                        PictureBox pb = cc as PictureBox;
+                        if (pb != null && pb.Image != null) { pb.Image.Dispose(); pb.Image = null; }
+                    }
+            }
+            catch { }
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            DisposeImages();
+            foreach (string f in _pngs)
+            { try { if (!string.IsNullOrEmpty(f) && File.Exists(f)) File.Delete(f); } catch { } }
+            try
+            {
+                string dir = Path.Combine(Path.GetTempPath(), "MPlotPrintPreview");
+                if (Directory.Exists(dir) && Directory.GetFiles(dir).Length == 0) Directory.Delete(dir);
+            }
+            catch { }
+            base.OnFormClosed(e);
+        }
+
         private void BuildPreviews()
         {
             Cursor = Cursors.WaitCursor;
             try
             {
+                DisposeImages();
+                _pngs.Clear(); _pngErrs.Clear(); _failed.Clear(); _failedLabels.Clear();
+                _list.Controls.Clear();
+                _prog.Maximum = Math.Max(1, _reqs.Count);
+                _prog.Value = 0;
                 for (int i = 0; i < _reqs.Count; i++)
                 {
+                    _info.Text = "正在生成预览 " + (i + 1) + " / " + _reqs.Count + "：" + SheetLabel(i);
+                    _prog.Value = i + 1;
+                    Application.DoEvents();
+                    string err = "";
                     string png = "";
-                    try { png = Plotter.RenderPreview(_reqs[i]); }
-                    catch (Exception ex) { Logger.Verbose("预览第 " + (i + 1) + " 张失败：" + ex.Message); }
+                    try { png = Plotter.RenderPreview(_reqs[i], out err); }
+                    catch (Exception ex) { err = ex.Message; Logger.Verbose("预览第 " + (i + 1) + " 张失败：" + ex.Message); }
+                    if (string.IsNullOrEmpty(png))
+                    {
+                        _failed.Add(i);
+                        _failedLabels.Add("第 " + (i + 1) + " 张 · " + SheetLabel(i) + "：" + err);
+                        _pngErrs.Add(err);
+                    }
+                    else _pngErrs.Add("");
                     _pngs.Add(png);
                     AddThumb(i, png);
                     Application.DoEvents();
                 }
+                _info.Text = _failed.Count == 0
+                    ? "预览已生成，共 " + _reqs.Count + " 张；确认无误后点「确认导出 PDF」"
+                    : "预览生成失败 " + _failed.Count + " 张（左侧红字），可点「重新生成预览」，或确认后直接导出";
                 Go(0);
             }
             finally { Cursor = Cursors.Default; }
@@ -685,6 +889,12 @@ namespace MPlot
             };
             Label cap = Ui.L((i + 1) + ". " + Trunc(label, 12), 158);
             cap.Location = new Point(4, 90);
+            if (_failed.Contains(i))
+            {
+                cap.Text = (i + 1) + ". " + Trunc(label, 9) + "（预览失败）";
+                cap.ForeColor = Color.Red;
+                cell.BorderStyle = BorderStyle.FixedSingle;
+            }
             cell.Controls.Add(pb); cell.Controls.Add(cap);
             _list.Controls.Add(cell);
         }
@@ -709,7 +919,7 @@ namespace MPlot
             if (_reqs.Count == 0) { _info.Text = "没有可预览的图纸"; _page.Text = ""; return; }
             _cur = Math.Max(0, Math.Min(_reqs.Count - 1, idx));
             string png = _cur < _pngs.Count ? _pngs[_cur] : "";
-            _big.Image = null;
+            try { if (_big.Image != null) { _big.Image.Dispose(); _big.Image = null; } } catch { }
             if (!string.IsNullOrEmpty(png) && File.Exists(png))
             {
                 try { using (FileStream fs = new FileStream(png, FileMode.Open, FileAccess.Read))
@@ -719,13 +929,40 @@ namespace MPlot
             PlotRequest r = _reqs[_cur];
             string scale = r.ScaleMode == ScaleMode.ScaleToFit ? "布满纸张"
                 : (r.ScaleMode == ScaleMode.OneToOne ? "1:1" : "1:" + r.ScaleDenominator.ToString("0.##"));
+            string paper, orient;
+            PaperInfo(_cur, out paper, out orient);
+            SheetItem s = _cur < _sheets.Count ? _sheets[_cur] : null;
             _info.Text = "第 " + (_cur + 1) + " / " + _reqs.Count + " 张　|　"
-                       + SheetLabel(_cur) + "　|　" + scale + "　|　"
+                       + SheetLabel(_cur) + "　|　" + Naming.FullFileName(s) + "　|　"
+                       + paper + "　|　" + scale + "　|　" + orient + "　|　"
                        + (r.Centered ? "居中" : "手动偏移") + "　|　"
                        + (r.Rotated90 ? "横向旋转90°" : "正向");
             if (string.IsNullOrEmpty(png))
-                _info.Text += "　（此张预览渲染失败，不影响实际打印）";
+            {
+                string reason = _cur < _pngErrs.Count ? _pngErrs[_cur] : "";
+                _info.Text += "　（此张预览生成失败" + (string.IsNullOrEmpty(reason) ? "" : "：" + reason) + "）";
+            }
             _page.Text = (_cur + 1) + " / " + _reqs.Count;
+        }
+
+        /// <summary>预览窗里显示的纸张尺寸与图纸方向（与正式导出同一套纸张/旋转参数）。</summary>
+        private void PaperInfo(int i, out string paper, out string orient)
+        {
+            paper = "纸张未定"; orient = "方向未定";
+            SheetItem s = i < _sheets.Count ? _sheets[i] : null;
+            double w = 0, h = 0;
+            if (s != null && s.Config != null && s.Config.Paper != null)
+            { w = s.Config.Paper.WidthMm; h = s.Config.Paper.HeightMm; }
+            else if (i < _reqs.Count)
+            {
+                MediaInfo m = PaperMatcher.ParseMedia(_reqs[i].MediaName);
+                if (m != null) { w = m.WidthMm; h = m.HeightMm; }
+            }
+            if (w <= 0 || h <= 0) return;
+            if (s != null && s.Rotated) { double t = w; w = h; h = t; }
+            string preset = PaperPresets.Guess(w, h).Preset;
+            paper = preset + " " + w.ToString("0.#") + "×" + h.ToString("0.#") + "mm";
+            orient = w >= h ? "横向" : "纵向";
         }
     }
 

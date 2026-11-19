@@ -48,6 +48,29 @@ namespace MPlot
             try { AcCore.SetSystemVariable("BACKGROUNDPLOT", 0); }
             catch (Exception ex) { Logger.Verbose("BACKGROUNDPLOT 设置跳过：" + ex.Message); }
         }
+
+        /// <summary>
+        /// 任务开始前记下 BACKGROUNDPLOT 的当前值，任务结束时由 RestoreBackgroundPlot 恢复。
+        /// 以前只关不恢复，跑完一批任务会在用户会话里永久留下改动；现在成对使用。
+        /// 返回 -1 表示读不到（不恢复）。
+        /// </summary>
+        public static int SaveBackgroundPlot()
+        {
+            try
+            {
+                object v = AcCore.GetSystemVariable("BACKGROUNDPLOT");
+                if (v == null) return -1;
+                return Convert.ToInt32(v);
+            }
+            catch (Exception ex) { Logger.Verbose("BACKGROUNDPLOT 读取跳过：" + ex.Message); return -1; }
+        }
+
+        public static void RestoreBackgroundPlot(int oldValue)
+        {
+            if (oldValue < 0) return;
+            try { AcCore.SetSystemVariable("BACKGROUNDPLOT", oldValue); }
+            catch (Exception ex) { Logger.Verbose("BACKGROUNDPLOT 恢复跳过：" + ex.Message); }
+        }
         #endregion
 
         #region ---- UCS / WCS / DCS ----

@@ -392,7 +392,7 @@ def check_behavior(raw_map):
         if b[:3] != b"\xef\xbb\xbf":
             issues.append("tools/selftest/run.ps1 必须带 UTF-8 BOM")
         else:
-            checks.append("纯逻辑实测：3 组断言 + 独立校验脚本齐备（run.ps1 编码正确）")
+            checks.append("纯逻辑实测：4 组断言 + 独立校验脚本齐备（run.ps1 编码正确）")
     selftest_cs = os.path.join(st, "Selftest.cs")
     if os.path.isfile(selftest_cs):
         stub = open(selftest_cs, encoding="utf-8").read()
@@ -708,7 +708,7 @@ def main():
     ok = not (missing or unlisted or errors or cs5 or acad or undef or pkg_issues or beh_issues or w7_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
-    print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并）")
+    print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")
     return 0 if ok else 1
 
 

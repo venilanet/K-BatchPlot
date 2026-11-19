@@ -191,6 +191,73 @@ namespace MPlot
             }
             catch (Exception ex) { Check("BuiltInPdfMerge 组", false, ex.GetType().Name + ": " + ex.Message); }
 
+            // ------------------------------------------------ 4. 导出前检查辅助
+            Console.WriteLine("--- 4. Preflight helpers ---");
+            try
+            {
+                Check("保留名 CON / PRN / AUX / NUL",
+                      Naming.IsReservedFileName("CON") && Naming.IsReservedFileName("prn")
+                      && Naming.IsReservedFileName("AUX") && Naming.IsReservedFileName("nul"), "");
+                Check("保留名带扩展名也认（CON.txt）", Naming.IsReservedFileName("CON.txt"), "");
+                Check("COM1 / COM9 / LPT1 是保留名，COM10 不是",
+                      Naming.IsReservedFileName("COM1") && Naming.IsReservedFileName("COM9")
+                      && Naming.IsReservedFileName("LPT1") && !Naming.IsReservedFileName("COM10"), "");
+                Check("正常图号不是保留名（D-XT1）", !Naming.IsReservedFileName("D-XT1")
+                      && !Naming.IsReservedFileName("") && !Naming.IsReservedFileName(null), "");
+                Check("非法字符：斜杠 / 冒号 / 星号 / 控制符",
+                      Naming.HasIllegalFileNameChars("A/B") && Naming.HasIllegalFileNameChars("A:B")
+                      && Naming.HasIllegalFileNameChars("A*B") && Naming.HasIllegalFileNameChars("A\tB"), "");
+                Check("非法字符：以点或空格结尾也算",
+                      Naming.HasIllegalFileNameChars("A.") && Naming.HasIllegalFileNameChars("A "), "");
+                Check("正常文件名无非法字符", !Naming.HasIllegalFileNameChars("D-XT1_配电系统图一")
+                      && !Naming.HasIllegalFileNameChars(""), "");
+
+                List<SheetItem> fix1 = new List<SheetItem>
+                {
+                    new SheetItem { FileStem = "A/B" },
+                    new SheetItem { FileStem = "正常名" },
+                    new SheetItem { FileStem = "C:D" }
+                };
+                int n1 = Naming.SanitizeStems(fix1);
+                Check("SanitizeStems：非法字符替换为 _，返回改动张数",
+                      n1 == 2 && fix1[0].FileStem == "A_B" && fix1[1].FileStem == "正常名" && fix1[2].FileStem == "C_D",
+                      "n=" + n1 + " " + fix1[0].FileStem + " / " + fix1[2].FileStem);
+
+                List<SheetItem> fix2 = new List<SheetItem>
+                {
+                    new SheetItem { FileStem = "A" },
+                    new SheetItem { FileStem = "a" },
+                    new SheetItem { FileStem = "B" },
+                    new SheetItem { FileStem = "A" },
+                    new SheetItem { FileStem = "" }
+                };
+                int n2 = Naming.FixDuplicateFileNames(fix2);
+                Check("FixDuplicateFileNames：忽略大小写，首次保留原名，后面 _01/_02",
+                      n2 == 2 && fix2[0].FileStem == "A" && fix2[1].FileStem == "a_01"
+                      && fix2[2].FileStem == "B" && fix2[3].FileStem == "A_01" && fix2[4].FileStem == "",
+                      "n=" + n2 + " " + string.Join(",", fix2.ConvertAll(x => x.FileStem).ToArray()));
+                Check("FullFileName 补 .pdf 后缀",
+                      Naming.FullFileName(fix2[0]) == "A.pdf" && Naming.FullFileName(null) == ".pdf", "");
+
+                PaperSpec ps;
+                Check("TryParseDisplay：A1", PaperPresets.TryParseDisplay("A1", out ps)
+                      && ps.WidthMm == 841 && ps.HeightMm == 594, "");
+                Check("TryParseDisplay：A1+1/2", PaperPresets.TryParseDisplay("A1+1/2", out ps)
+                      && ps.Preset == "A1+1/2", "");
+                Check("TryParseDisplay：A1 841×594mm（带尺寸后缀也认）",
+                      PaperPresets.TryParseDisplay("A1 841×594mm", out ps) && ps.Preset == "A1", "");
+                Check("TryParseDisplay：自定义 880×640mm 还原实测尺寸",
+                      PaperPresets.TryParseDisplay("自定义 880×640mm", out ps)
+                      && ps.IsCustom && ps.WidthMm == 880 && ps.HeightMm == 640, "");
+                Check("TryParseDisplay：裸「自定义」回默认 A1 尺寸",
+                      PaperPresets.TryParseDisplay("自定义", out ps) && ps.IsCustom, "");
+                Check("TryParseDisplay：未知名 / 坏尺寸返回 false",
+                      !PaperPresets.TryParseDisplay("ZZZ", out ps)
+                      && !PaperPresets.TryParseDisplay("自定义 abc", out ps)
+                      && !PaperPresets.TryParseDisplay("", out ps), "");
+            }
+            catch (Exception ex) { Check("Preflight helpers 组", false, ex.GetType().Name + ": " + ex.Message); }
+
             Console.WriteLine("RESULT PASS=" + _pass + " FAIL=" + _fail);
             return _fail == 0 ? 0 : 1;
         }

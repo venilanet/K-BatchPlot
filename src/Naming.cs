@@ -131,5 +131,87 @@ namespace MPlot
             }
             return "";
         }
+
+        // ================================================================ 导出前检查（纯逻辑，可脱离 CAD 实测）
+        /// <summary>Windows 系统保留文件名：CON / PRN / AUX / NUL / COM1-9 / LPT1-9（忽略大小写，取点前主干）。</summary>
+        private static readonly string[] ReservedNames = {
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
+        };
+
+        /// <summary>文件名主干是不是 Windows 系统保留名称（如 CON、COM1）。</summary>
+        public static bool IsReservedFileName(string stem)
+        {
+            if (string.IsNullOrWhiteSpace(stem)) return false;
+            string base_ = stem.Trim();
+            int dot = base_.IndexOf('.');
+            if (dot >= 0) base_ = base_.Substring(0, dot);
+            base_ = base_.Trim();
+            foreach (string r in ReservedNames)
+                if (string.Equals(base_, r, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        /// <summary>文件名里是否含有 Windows 非法字符（&lt; &gt; : " / \ | ? * 或控制字符），或以点/空格结尾。</summary>
+        public static bool HasIllegalFileNameChars(string stem)
+        {
+            if (string.IsNullOrEmpty(stem)) return false;
+            foreach (char c in stem)
+            {
+                if (c < 32) return true;
+                foreach (char bad in new char[] { '<', '>', ':', '"', '/', '\\', '|', '?', '*' })
+                    if (c == bad) return true;
+            }
+            return stem.EndsWith(".") || stem.EndsWith(" ");
+        }
+
+        /// <summary>
+        /// 把清单里所有文件名的非法字符替换为下划线（与 AcadUtil.SafeFileName 同规则），
+        /// 返回改动过的张数；改完的文件名直接写回清单，界面刷新后即能看到。
+        /// </summary>
+        public static int SanitizeStems(List<SheetItem> sheets)
+        {
+            int fixed_ = 0;
+            if (sheets == null) return 0;
+            foreach (SheetItem s in sheets)
+            {
+                string old = s.FileStem ?? "";
+                string clean = AcadUtil.SafeFileName(old);
+                if (!string.Equals(clean, old, StringComparison.Ordinal)) { s.FileStem = clean; fixed_++; }
+            }
+            return fixed_;
+        }
+
+        /// <summary>
+        /// 自动修复重复文件名：按原始顺序，第一次出现保留原名，后面的依次追加 _01、_02…
+        /// （忽略大小写比较；追加后若仍与已有名冲突，继续往后找空号）。返回改动过的张数。
+        /// </summary>
+        public static int FixDuplicateFileNames(List<SheetItem> sheets)
+        {
+            int fixed_ = 0;
+            if (sheets == null) return 0;
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (SheetItem s in sheets)
+            {
+                string stem = (s.FileStem ?? "").Trim();
+                if (stem.Length == 0) continue;
+                if (seen.Add(stem)) continue;
+                int n = 1;
+                string cand;
+                do { cand = stem + "_" + n.ToString("00"); n++; }
+                while (!seen.Add(cand));
+                s.FileStem = cand;
+                fixed_++;
+            }
+            return fixed_;
+        }
+
+        /// <summary>完整 PDF 文件名（主干 + .pdf），给清单文件名列 / 预览窗 / 结果窗统一显示。</summary>
+        public static string FullFileName(SheetItem s)
+        {
+            string stem = s == null ? "" : (s.FileStem ?? "");
+            return stem + ".pdf";
+        }
     }
 }

@@ -1,6 +1,6 @@
 ﻿<#
   纯逻辑实测：把不依赖 AutoCAD 的源文件单独编译成 exe 真跑一遍。
-  覆盖 MiniJson（配置持久化）/ Naming（文件命名）/ BuiltInPdfMerge（PDF 合集）。
+  覆盖 MiniJson（配置持久化）/ Naming（文件命名）/ BuiltInPdfMerge（PDF 合集）/ Preflight helpers（导出前检查辅助）。
   用法：powershell -ExecutionPolicy Bypass -File tools\selftest\run.ps1
   ★ 本文件必须保存为 UTF-8 with BOM。
 #>
@@ -37,7 +37,7 @@ $args = @('/nologo', '/target:exe', '/platform:anycpu', '/utf8output', ('/out:' 
 if (-not (Test-Path -LiteralPath $exe)) { Write-Host 'FAIL  测试程序编译失败' -ForegroundColor Red; exit 1 }
 Write-Host ('  OK  selftest.exe  ' + (Get-Item -LiteralPath $exe).Length + ' bytes') -ForegroundColor Green
 
-Write-Host '=== [C] 运行 3 组纯逻辑断言 ===' -ForegroundColor Cyan
+Write-Host '=== [C] 运行 4 组纯逻辑断言 ===' -ForegroundColor Cyan
 & $exe $work 2>&1 | ForEach-Object { Write-Host ('  ' + $_) }
 $logicCode = $LASTEXITCODE
 

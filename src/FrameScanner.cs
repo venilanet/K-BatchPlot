@@ -34,6 +34,12 @@ namespace MPlot
         public bool Plotted { get; set; }
         public bool IsGeneralLayout { get; set; }
         public string Error { get; set; }
+        /// <summary>本张图纸的独立导出状态（待导出 / 正在导出 / 成功 / 失败 / 已跳过）。</summary>
+        public SheetStatus Status { get; set; }
+        /// <summary>目标 PDF 已存在时用户明确选了「覆盖」才为 true；默认 false，绝不悄悄覆盖。</summary>
+        public bool AllowOverwrite { get; set; }
+        /// <summary>本次任务里本张图纸的临时 PDF 路径（任务临时目录内），成功后才移到最终文件名。</summary>
+        public string TempPdfPath { get; set; }
         public Point3d Center { get; set; }
         /// <summary>本张纸张是按实测尺寸自动识别的（库内纸张对不上时自动纠正），不是照抄库内配置。</summary>
         public bool PaperAutoDetected { get; set; }

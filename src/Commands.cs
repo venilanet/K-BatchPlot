@@ -31,21 +31,32 @@ namespace MPlot
                 AcadUtil.EnsureMenuBarVisible();
                 bool menu = MenuBuilder.EnsureMenu();
 
-                // 打印前预览闸门：由 BatchEngine 在真正出图前回调，用同一套 PlotRequest 渲染。
+                // 导出前预览闸门：由 BatchEngine 在真正出图前回调，用同一套 PlotRequest 渲染。
+                // 预览窗口打不开时不静默继续导出：请用户选重试 / 直接导出 / 取消。
                 BatchEngine.PreviewHook = delegate(List<PlotRequest> reqs, List<SheetItem> sheets, string project)
                 {
-                    try
+                    while (true)
                     {
-                        using (PrintPreviewForm f = new PrintPreviewForm(reqs, sheets, project))
+                        try
                         {
-                            Commands.ShowForm(f);
-                            return f.Confirmed;
+                            using (PrintPreviewForm f = new PrintPreviewForm(reqs, sheets, project))
+                            {
+                                Commands.ShowForm(f);
+                                BatchEngine.PreviewFailedLabels = new List<string>(f.FailedLabels);
+                                return f.Decision;
+                            }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        Logger.Warn("预览窗口异常：" + ex.Message + "（改为直接打印）");
-                        return true;
+                        catch (Exception ex)
+                        {
+                            Logger.Warn("预览窗口异常：" + ex.Message);
+                            DialogResult r = MessageBox.Show(
+                                "导出预览窗口打开失败：" + ex.Message
+                                + "\r\n\r\n是 = 重试，再打开一次预览；\r\n否 = 不检查预览、明确确认后直接导出；\r\n取消 = 取消本次任务，不生成 PDF。",
+                                "导出前预览", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
+                            if (r == DialogResult.Yes) continue;
+                            if (r == DialogResult.No) return PreviewDecision.ContinueWithoutPreview;
+                            return PreviewDecision.Canceled;
+                        }
                     }
                 };
 
@@ -116,6 +127,8 @@ namespace MPlot
         /// <summary>
         /// AutoCAD .NET API 只能在主线程调用，所以批打同步执行、进度条靠 DoEvents 刷新。
         /// 不 Task.Run / 不 BackgroundWorker —— 那样会在跨线程访问 Database 时直接崩。
+        /// 结果窗里点了「重试失败项」或「重新合并」时，在这里循环再跑一轮（只重试失败项 / 只重跑合并），
+        /// 直到用户在结果窗里点关闭为止。
         /// </summary>
         public static BatchResult RunWithProgress(string title,
             Func<Action<int, int, string>, Func<bool>, BatchResult> work)
@@ -123,28 +136,51 @@ namespace MPlot
             ProgressForm pf = new ProgressForm(title);
             try
             {
-                pf.Show();
-                System.Windows.Forms.Application.DoEvents();
-                Action<int, int, string> prog = delegate(int cur, int total, string msg)
+                Func<Action<int, int, string>, Func<bool>, BatchResult> job = work;
+                BatchResult r = null;
+                while (true)
                 {
-                    pf.SetProgress(cur, total, msg);
+                    pf.ResetCancel();
+                    pf.Show();
                     System.Windows.Forms.Application.DoEvents();
-                };
-                Func<bool> canceled = delegate { return pf.CancelRequested; };
-                BatchResult r = work(prog, canceled);
-                pf.Hide();
-                System.Windows.Forms.Application.DoEvents();
-                ShowResult(r, title);
-                return r;
+                    Action<int, int, string> prog = delegate(int cur, int total, string msg)
+                    {
+                        pf.SetProgress(cur, total, msg);
+                        System.Windows.Forms.Application.DoEvents();
+                    };
+                    Func<bool> canceled = delegate { return pf.CancelRequested; };
+                    r = job(prog, canceled);
+                    pf.Hide();
+                    System.Windows.Forms.Application.DoEvents();
+                    ResultAction act = ShowResult(r, title);
+                    if (act == ResultAction.RetryFailed && r != null && r.Failed > 0)
+                    {
+                        BatchResult prev = r;
+                        job = delegate(Action<int, int, string> p, Func<bool> c)
+                        { return BatchEngine.RetrySheets(prev, p, c); };
+                        continue;
+                    }
+                    if (act == ResultAction.Remerge && r != null && r.MergeFailed)
+                    {
+                        BatchResult prev = r;
+                        job = delegate(Action<int, int, string> p, Func<bool> c)
+                        { return BatchEngine.RetryMergeOnly(prev, p, c); };
+                        continue;
+                    }
+                    return r;
+                }
             }
             finally { pf.Dispose(); }
         }
 
-        private static void ShowResult(BatchResult r, string title)
+        private static ResultAction ShowResult(BatchResult r, string title)
         {
-            if (r == null) return;
-            try { using (ResultForm f = new ResultForm(r, title)) ShowForm(f); }
-            catch (Exception ex) { Logger.Warn("结果窗口显示失败：" + ex.Message); }
+            if (r == null) return ResultAction.None;
+            try
+            {
+                using (ResultForm f = new ResultForm(r, title)) { ShowForm(f); return f.Action; }
+            }
+            catch (Exception ex) { Logger.Warn("结果窗口显示失败：" + ex.Message); return ResultAction.None; }
         }
 
         /// <summary>需要往 DWG 里插入原生 TABLE 时，先在 CAD 里点一个位置（必须在窗口关闭后）。</summary>

@@ -202,11 +202,38 @@ namespace MPlot
         /// <summary>合并成功后按配置清理单页 PDF。只删本次生成的、且必须在 UI 里二次确认过。</summary>
         public static int CleanupSingles(List<string> files, string keepMergedPath)
         {
+            return CleanupSingles(files, keepMergedPath, null);
+        }
+
+        /// <summary>
+        /// 合并成功后按配置清理单页 PDF（带归属校验）：
+        /// 只删本次任务文件列表里的文件，且文件必须位于 baseDir（本次输出目录）之下，
+        /// 绝不删其他任务或用户已有的文件。baseDir 为空时不做目录校验（兼容旧调用）。
+        /// </summary>
+        public static int CleanupSingles(List<string> files, string keepMergedPath, string baseDir)
+        {
             int n = 0;
+            string baseFull = "";
+            if (!string.IsNullOrEmpty(baseDir))
+            {
+                try { baseFull = Path.GetFullPath(baseDir).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar; }
+                catch { baseFull = ""; }
+            }
             foreach (string f in files)
             {
                 if (string.IsNullOrEmpty(f) || !File.Exists(f)) continue;
                 if (string.Equals(f, keepMergedPath, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!string.IsNullOrEmpty(baseFull))
+                {
+                    string full;
+                    try { full = Path.GetFullPath(f); }
+                    catch { continue; }
+                    if (!full.StartsWith(baseFull, StringComparison.OrdinalIgnoreCase))
+                    {
+                        Logger.Warn("单页 PDF 不在本次输出目录内，拒绝清理：" + f);
+                        continue;
+                    }
+                }
                 try { File.Delete(f); n++; }
                 catch (Exception ex) { Logger.Warn("单页 PDF 清理失败：" + f + " / " + ex.Message); }
             }

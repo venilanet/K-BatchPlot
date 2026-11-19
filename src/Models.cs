@@ -20,6 +20,81 @@ namespace MPlot
     public enum AttrReadMode { DisplayText, RawAttribute }
     /// <summary>颜色输出快捷预设；选 Custom 时完全以 CTB 下拉为准。</summary>
     public enum ColorMode { Custom, Color, Monochrome, Grayscale }
+    /// <summary>批量导出里一张图纸的独立状态（重试/结果窗口/清单状态列共用）。</summary>
+    public enum SheetStatus { Pending, Exporting, Success, Failed, Skipped }
+    /// <summary>一张图纸状态的中文显示（清单、结果窗口共用）。</summary>
+    public static class SheetStatusNames
+    {
+        public static string Text(SheetStatus s)
+        {
+            switch (s)
+            {
+                case SheetStatus.Pending: return "待导出";
+                case SheetStatus.Exporting: return "正在导出";
+                case SheetStatus.Success: return "成功";
+                case SheetStatus.Failed: return "失败";
+                case SheetStatus.Skipped: return "已跳过";
+                default: return "";
+            }
+        }
+    }
+    /// <summary>导出前检查里一项问题的严重程度：Error 阻断导出，Warning 只提醒、可确认继续。</summary>
+    public enum PreflightSeverity { Error, Warning }
+    /// <summary>导出前检查的问题种类。</summary>
+    public enum PreflightIssueKind
+    {
+        EmptyFileName, IllegalFileName, ReservedFileName, DuplicateFileName, DuplicateDrawNo,
+        InvalidWindow, InvalidSize, InvalidPaper, InvalidScale, OutputDirNotWritable, FileExists
+    }
+    /// <summary>导出前检查发现的一项问题：行号（从 0 计）+ 图号 + 原因；可修复的标 AutoFixable。</summary>
+    public sealed class PreflightIssue
+    {
+        public int RowIndex { get; set; }
+        public string DrawNo { get; set; }
+        public PreflightIssueKind Kind { get; set; }
+        public PreflightSeverity Severity { get; set; }
+        public string Message { get; set; }
+        public bool AutoFixable { get; set; }
+        public PreflightIssue()
+        {
+            RowIndex = -1; DrawNo = ""; Message = "";
+        }
+        public override string ToString()
+        {
+            return "第 " + (RowIndex + 1) + " 行" + (string.IsNullOrEmpty(DrawNo) ? "" : " · 图号 " + DrawNo)
+                + " · " + Message;
+        }
+    }
+    /// <summary>一次导出前检查的完整结果。</summary>
+    public sealed class PreflightResult
+    {
+        public List<PreflightIssue> Issues { get; set; }
+        public PreflightResult() { Issues = new List<PreflightIssue>(); }
+        public bool HasErrors
+        {
+            get
+            {
+                foreach (PreflightIssue i in Issues)
+                    if (i.Severity == PreflightSeverity.Error) return true;
+                return false;
+            }
+        }
+        public bool HasWarnings
+        {
+            get
+            {
+                foreach (PreflightIssue i in Issues)
+                    if (i.Severity == PreflightSeverity.Warning) return true;
+                return false;
+            }
+        }
+        public int CountOf(PreflightIssueKind kind)
+        {
+            int n = 0;
+            foreach (PreflightIssue i in Issues) if (i.Kind == kind) n++;
+            return n;
+        }
+    }
 
     // ================================================================ 纸张
     /// <summary>纸张定义。Preset 仅作显示/回显，真正参与匹配的是 WidthMm / HeightMm。</summary>
@@ -80,6 +155,42 @@ namespace MPlot
                 default: w = 841; h = 594; name = "A1"; break;
             }
             return new PaperSpec { Preset = name, WidthMm = w, HeightMm = h, IsCustom = name == "自定义" };
+        }
+
+        /// <summary>解析清单纸张列里的显示文字回纸张定义：接受 "A1"、"自定义"、"自定义 880×640mm"、"A1+1/2"。</summary>
+        public static bool TryParseDisplay(string text, out PaperSpec spec)
+        {
+            spec = null;
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            string t = text.Trim();
+            // "自定义 880×640mm"：按实测尺寸还原自定义纸张
+            if (t.StartsWith("自定义"))
+            {
+                string rest = t.Substring("自定义".Length).Trim();
+                if (rest.Length == 0) { spec = Get("自定义"); return true; }
+                rest = rest.Replace("mm", "").Replace("MM", "").Trim();
+                string[] wh = rest.Split(new char[] { '×', 'x', 'X' }, StringSplitOptions.RemoveEmptyEntries);
+                double w, h;
+                if (wh.Length == 2
+                    && double.TryParse(wh[0].Trim(), System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out w)
+                    && double.TryParse(wh[1].Trim(), System.Globalization.NumberStyles.Float,
+                        System.Globalization.CultureInfo.InvariantCulture, out h)
+                    && w > 0 && h > 0)
+                {
+                    spec = new PaperSpec { Preset = "自定义", WidthMm = w, HeightMm = h, IsCustom = true };
+                    return true;
+                }
+                return false;
+            }
+            // 标准预设名：取第一个空格前的部分（"A1 841×594mm" 这类也认）
+            string name = t.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)[0];
+            foreach (string n in Names)
+            {
+                if (string.Equals(n, name, StringComparison.OrdinalIgnoreCase))
+                { spec = Get(n); return true; }
+            }
+            return false;
         }
 
         /// <summary>按尺寸反查最接近的预设名，给「框选图框」自动识别纸张用。</summary>

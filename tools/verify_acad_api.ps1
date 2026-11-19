@@ -172,7 +172,7 @@ Check 'Autodesk.AutoCAD.DatabaseServices.Database' @('TransactionManager','Curre
 
 Write-Host ''
 Write-Host '=== 4. 编辑器 / 交互 ===' -ForegroundColor Yellow
-Check 'Autodesk.AutoCAD.EditorInput.Editor' @('WriteMessage','GetPoint','GetCorner','SelectCrossingWindow','SelectWindow','SelectAll','GetSelection','GetEntity','SetImpliedSelection','GetString','ZoomWindow','UpdateScreen','GetCurrentView','SetCurrentView')
+Check 'Autodesk.AutoCAD.EditorInput.Editor' @('WriteMessage','GetPoint','GetCorner','SelectCrossingWindow','SelectWindow','SelectAll','GetSelection','GetEntity','SetImpliedSelection','GetString','ZoomWindow','UpdateScreen','GetCurrentView','SetCurrentView','Document')
 Check 'Autodesk.AutoCAD.EditorInput.PromptSelectionResult' @('Status','Value')
 Check 'Autodesk.AutoCAD.EditorInput.SelectionFilter' @('.ctor')
 

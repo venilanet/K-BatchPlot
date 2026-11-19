@@ -252,8 +252,55 @@ namespace MPlot
         }
 
         /// <summary>
+        /// 校验一份 PDF 是否完整可用（导出成功判定用，不只看「文件存在」）：
+        /// 存在、大小 &gt; 0、文件头是 %PDF-、尾部能找到 %%EOF、且能独占打开（没被驱动继续写）。
+        /// 校验失败返回 false + 具体原因；调用方不得把未通过校验的文件当成功结果。
+        /// </summary>
+        public static bool ValidatePdf(string path, out string error)
+        {
+            error = "";
+            if (string.IsNullOrEmpty(path)) { error = "PDF 路径为空"; return false; }
+            FileInfo fi;
+            try { fi = new FileInfo(path); }
+            catch (Exception ex) { error = "PDF 路径无效：" + ex.Message; return false; }
+            if (!fi.Exists) { error = "PDF 文件不存在"; return false; }
+            if (fi.Length <= 0) { error = "PDF 是空文件（0 字节）"; return false; }
+            // 还在被写入的文件独占打开会失败：等一会儿再试，最多约 2 秒
+            bool locked = false;
+            for (int i = 0; i < 20; i++)
+            {
+                try { using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None)) { } locked = false; break; }
+                catch { locked = true; Thread.Sleep(100); }
+            }
+            if (locked) { error = "PDF 仍被占用、尚未完全写入"; return false; }
+            try
+            {
+                using (FileStream fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    if (fs.Length < 5) { error = "PDF 文件过小"; return false; }
+                    byte[] head = new byte[5];
+                    if (fs.Read(head, 0, 5) != 5 || Encoding.ASCII.GetString(head) != "%PDF-")
+                    { error = "PDF 文件头不是 %PDF-，不是有效 PDF"; return false; }
+                    // 尾部 2KB 里找 %%EOF：没有就是没写完或被截断
+                    long tailLen = Math.Min(2048, fs.Length);
+                    byte[] tail = new byte[tailLen];
+                    fs.Seek(fs.Length - tailLen, SeekOrigin.Begin);
+                    if (fs.Read(tail, 0, (int)tailLen) != (int)tailLen) { error = "PDF 尾部读取失败"; return false; }
+                    string tailText = Encoding.ASCII.GetString(tail);
+                    if (tailText.IndexOf("%%EOF", StringComparison.Ordinal) < 0)
+                    { error = "PDF 尾部缺少 %%EOF，文件未完全写入"; return false; }
+                }
+            }
+            catch (Exception ex) { error = "PDF 校验失败：" + ex.Message; return false; }
+            return true;
+        }
+
+        /// <summary>
         /// 输出文件名兜底：PC3 可能补 .pdf / .PDF，也可能在同名时改名字。
-        /// 等文件真正落盘（>0 字节）再返回；实在找不到就在目录里找刚生成的 PDF 挪过去。
+        /// 等文件真正落盘（&gt;0 字节）再返回；实在找不到就在目录里找刚生成的 PDF 挪过去。
+        /// 安全红线：只认与期望主干同名的文件（驱动改名如 name(1).pdf 也认），
+        /// 绝不把输出目录里任意一个最近修改的 PDF 当成当前任务的结果——
+        /// 现在输出先落任务临时目录，目录里只可能是本次任务自己的文件。
         /// </summary>
         private static string ResolveProducedFile(string stem, string expected, DateTime started)
         {
@@ -269,8 +316,10 @@ namespace MPlot
             {
                 string dir = Path.GetDirectoryName(stem);
                 if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return "";
+                string wantName = Path.GetFileNameWithoutExtension(expected);
                 FileInfo candidate = new DirectoryInfo(dir).GetFiles("*.pdf")
-                    .Where(f => f.LastWriteTime >= started.AddSeconds(-2) && f.Length > 0)
+                    .Where(f => f.LastWriteTime >= started.AddSeconds(-2) && f.Length > 0
+                        && f.Name.StartsWith(wantName, StringComparison.OrdinalIgnoreCase))
                     .OrderByDescending(f => f.LastWriteTime).FirstOrDefault();
                 if (candidate == null) return "";
                 if (candidate.FullName.Equals(expected, StringComparison.OrdinalIgnoreCase)) return candidate.FullName;
@@ -357,23 +406,43 @@ namespace MPlot
         /// <summary>
         /// 打印前预览：用与真实打印「完全相同」的窗口 / 比例 / 居中 / 旋转 / CTB，
         /// 只把输出设备换成 PNG，渲染成一张所见即所得的预览图。
-        /// 输出到系统临时目录，绝不覆盖真实 PDF；任何失败返回空串，由调用方显示占位，不阻断批打。
+        /// 输出到系统临时目录，绝不覆盖真实 PDF；失败返回空串 + 具体原因（调用方据此逐张记录，
+        /// 不再用一句笼统的「预览失败」带过，更不许静默继续导出）。
         /// </summary>
         public static string RenderPreview(PlotRequest realReq)
         {
-            if (realReq == null) return "";
+            string ignored;
+            return RenderPreview(realReq, out ignored);
+        }
+
+        public static string RenderPreview(PlotRequest realReq, out string error)
+        {
+            error = "";
+            if (realReq == null) { error = "预览请求为空"; return ""; }
             PlotEngine pe = null;
             PlotProgressDialog ppd = null;
             bool begun = false, docBegun = false, pageBegun = false;
             try
             {
                 var doc = AcCore.DocumentManager.MdiActiveDocument;
-                if (doc == null) return "";
+                if (doc == null) { error = "没有打开的图纸"; return ""; }
                 Database db = doc.Database;
+
+                // 预览设备先行检查：本机没有 PublishToWeb PNG.pc3 时直接报具体原因，
+                // 不要等渲染超时才给一句「预览生成失败」。
+                try
+                {
+                    List<string> devices = AcadUtil.GetPlotDevices();
+                    if (devices != null && devices.Count > 0
+                        && !devices.Any(d => string.Equals(d, "PublishToWeb PNG.pc3",
+                            StringComparison.OrdinalIgnoreCase)))
+                    { error = "本机缺少 PublishToWeb PNG.pc3 预览设备，无法生成预览图"; return ""; }
+                }
+                catch { }
 
                 string dir = Path.Combine(Path.GetTempPath(), "MPlotPrintPreview");
                 try { Directory.CreateDirectory(dir); }
-                catch { return ""; }
+                catch { error = "预览临时目录创建失败"; return ""; }
                 string stem = Path.Combine(dir, "preview_" + Guid.NewGuid().ToString("N"));
 
                 ObjectId layoutId = realReq.LayoutId;
@@ -386,12 +455,12 @@ namespace MPlot
                         t0.Commit();
                     }
                 }
-                if (layoutId.IsNull) return "";
+                if (layoutId.IsNull) { error = "无法确定要打印的布局"; return ""; }
 
                 using (Transaction tr = db.TransactionManager.StartTransaction())
                 {
                     Layout lo = tr.GetObject(layoutId, OpenMode.ForRead) as Layout;
-                    if (lo == null) return "";
+                    if (lo == null) { error = "布局对象无效"; return ""; }
                     using (PlotSettings ps = new PlotSettings(lo.ModelType))
                     {
                         ps.CopyFrom(lo);
@@ -430,6 +499,8 @@ namespace MPlot
                             TryValidator(psv, "SetCurrentStyleSheet", ps, realReq.StyleSheet);
                         TrySetProperty(ps, "PlotPlotStyles", realReq.PlotWithPlotStyles);
                         TrySetProperty(ps, "PrintLineweights", realReq.PlotWithLineweights);
+                        // 与真正出图保持一致：线宽随比例缩放也要同步，否则预览与成品线宽不一致
+                        TrySetProperty(ps, "ScaleLineweights", realReq.ScaleLineweights);
                         TryValidator(psv, "SetPlotRotation", ps,
                             EnumVal("PlotRotation", realReq.Rotated90 ? "Degrees090" : "Degrees000"));
                         // 与真正出图同一个居中入口：回读校验，所见即所得。
@@ -476,11 +547,13 @@ namespace MPlot
                     }
                     Thread.Sleep(100);
                 }
+                error = "预览图未生成（PNG 设备无输出）";
                 return "";
             }
             catch (Exception ex)
             {
-                Logger.Verbose("预览渲染跳过：" + ex.Message);
+                error = ex.Message;
+                Logger.Verbose("预览渲染失败：" + ex.Message);
                 return "";
             }
             finally
