@@ -703,6 +703,50 @@ namespace MPlot
     }
 
     // ================================================================ 打印前预览
+    /// <summary>单张打印预览：清单里点某行的「预览」，按该行当前纸张/比例渲染一张图，大图查看。
+    /// 只看不导出，方便逐张核对打印效果（字会不会太小、内容有没有被裁）；关闭即删临时 PNG。</summary>
+    public sealed class SingleSheetPreviewForm : Form
+    {
+        private readonly string _png;
+        private readonly PictureBox _pic = new PictureBox
+        { Dock = DockStyle.Fill, SizeMode = PictureBoxSizeMode.Zoom, BackColor = Color.White };
+
+        public SingleSheetPreviewForm(string png, string caption)
+        {
+            _png = png;
+            Text = "打印预览 · " + caption;
+            Font = Ui.Font9;
+            StartPosition = FormStartPosition.CenterScreen;
+            ClientSize = new Size(1000, 700);
+            MinimumSize = new Size(640, 480);
+            ShowIcon = false;
+            try
+            {
+                if (!string.IsNullOrEmpty(_png) && File.Exists(_png))
+                    _pic.Image = Image.FromFile(_png);
+            }
+            catch (Exception ex) { Logger.Verbose("预览图加载失败：" + ex.Message); }
+            Label info = Ui.L(caption + "（所见即导出时的打印效果）", 0);
+            info.Dock = DockStyle.Top;
+            info.Height = 26;
+            info.Padding = new Padding(8, 5, 8, 0);
+            Button close = Ui.B("关闭", delegate { Close(); }, 90);
+            FlowLayoutPanel bottom = new FlowLayoutPanel
+            { Dock = DockStyle.Bottom, Height = 46, FlowDirection = FlowDirection.RightToLeft, Padding = new Padding(6) };
+            bottom.Controls.Add(close);
+            Controls.Add(_pic);
+            Controls.Add(info);
+            Controls.Add(bottom);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            try { if (_pic.Image != null) { _pic.Image.Dispose(); _pic.Image = null; } } catch { }
+            try { if (!string.IsNullOrEmpty(_png) && File.Exists(_png)) File.Delete(_png); } catch { }
+            base.OnFormClosed(e);
+        }
+    }
+
     /// <summary>
     /// 打印前统一预览窗口：用与真实打印完全相同的参数渲染每张图，
     /// 左侧缩略图可点选、右侧放大查看，确认后才开始批量打印。

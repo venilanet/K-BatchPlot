@@ -1149,6 +1149,88 @@ def check_round8():
     return checks, issues
 
 
+def check_round9():
+    """2026-11-19 第九轮（真机反馈：清单要显示真实比例、每行可改纸张、备注列无用、
+    点一行能预览打印效果、多选批量移动；另缺使用说明）的防回退规则。
+    修：比例列始终显示有效比例（自动=实测÷纸张，改纸张即变；手动带 *；超 1:200 标橙）；
+    纸张列改下拉框（自定义保留实测尺寸）；备注列删、换成每行「预览」按钮（与导出同一套
+    请求渲染）；多选上移/下移整批移动；仓库根目录新增独立《使用说明.txt》。grep 级别。"""
+    checks, issues = [], []
+
+    def read(rel):
+        pp = os.path.join(ROOT, rel)
+        return open(pp, encoding="utf-8-sig").read() if os.path.isfile(pp) else ""
+
+    form = read("src/UI/FrameBatchForm.cs")
+    engine = read("src/BatchEngine.cs")
+    forms = read("src/UI/Forms.cs")
+
+    if "C_REMARK" not in form and "cRemark" not in form:
+        checks.append("备注列已删（C_REMARK / cRemark 无残留）")
+    else:
+        issues.append("第九轮回退：备注列仍在")
+    if "C_PREVIEW" in form and "cPreview" in form and "行内预览按钮" in form:
+        checks.append("预览按钮列已加（C_PREVIEW，点一行看打印效果）")
+    else:
+        issues.append("第九轮回退：预览按钮列缺失")
+    if "internal static PlotRequest BuildSinglePreviewRequest" in engine:
+        checks.append("单张预览请求入口已加（与导出同一套 BuildRequest）")
+    else:
+        issues.append("第九轮回退：单张预览请求入口缺失，预览与导出可能不一致")
+    if "class SingleSheetPreviewForm" in forms:
+        checks.append("单张预览窗已加（大图查看，关闭删临时 PNG）")
+    else:
+        issues.append("第九轮回退：单张预览窗缺失")
+    if "PreviewRow(e.RowIndex)" in form and "Plotter.RenderPreview" in form:
+        checks.append("点预览按钮渲染该行（RenderPreview，失败直接报原因）")
+    else:
+        issues.append("第九轮回退：预览按钮未接渲染")
+    if "DataGridViewComboBoxColumn" in form and "PaperPresets.Names" in form:
+        checks.append("纸张列已改下拉框（A0/A1/A2/A3/A4/加长/自定义）")
+    else:
+        issues.append("第九轮回退：纸张列不是下拉框")
+    if "CurrentCellDirtyStateChanged" in form and "CellValueChanged" in form:
+        checks.append("纸张下拉选完立即提交并重算文件名与比例")
+    else:
+        issues.append("第九轮回退：纸张下拉改完不提交，比例与文件名不跟着变")
+    if 'pn.Trim() == "自定义"' in form and "实测尺寸" in form:
+        checks.append("下拉选「自定义」保留本行实测尺寸，不重置成 841×594")
+    else:
+        issues.append("第九轮回退：自定义纸张可能被重置成 841×594 默认")
+    if "ScaleText" in form and "EffectiveDen" in form and "ParseDenCell" in form:
+        checks.append("比例列显示有效比例（自动=实测÷纸张；手动带 *；接受 1:100 / 100 / 清空=自动）")
+    else:
+        issues.append("第九轮回退：比例列不显示有效比例")
+    if ">= 200" in form and "DarkOrange" in form:
+        checks.append("比例超 1:200 标橙色提醒字可能偏小")
+    else:
+        issues.append("第九轮回退：比例过大无提醒")
+    if "HashSet<SheetItem>" in form and "selSet.Contains" in form:
+        checks.append("多选上移/下移整批移动（相对顺序不变，移动后保持选中）")
+    else:
+        issues.append("第九轮回退：多选移动仍只动第一行")
+    txt_path = os.path.join(ROOT, "使用说明.txt")
+    if os.path.isfile(txt_path):
+        raw = open(txt_path, "rb").read()
+        txt = raw.decode("utf-8-sig")
+        if raw[:3] == b"\xef\xbb\xbf":
+            checks.append("使用说明.txt 在仓库根目录，UTF-8 带 BOM（Win7 记事本打开不乱码）")
+        else:
+            issues.append("第九轮回退：使用说明.txt 缺 UTF-8 BOM，Win7 记事本打开会乱码")
+        if all(k in txt for k in ("安装", "图框型", "预览", "卸载", "纸张与比例")):
+            checks.append("使用说明覆盖安装、图框型、预览、纸张与比例、卸载")
+        else:
+            issues.append("第九轮回退：使用说明缺关键章节")
+    else:
+        issues.append("第九轮回退：仓库根目录缺使用说明.txt")
+    readme = read("README.md")
+    if "使用说明.txt" in readme:
+        checks.append("README 顶上指引新人先看使用说明.txt")
+    else:
+        issues.append("第九轮回退：README 未指引使用说明.txt")
+    return checks, issues
+
+
 def main():
     tree = ET.parse(CSPROJ)
     listed = sorted(e.attrib["Include"].replace("\\", "/") for e in tree.findall(".//m:Compile", NS))
@@ -1337,7 +1419,14 @@ def main():
     for i in r8_issues:
         print("  [X] " + i)
 
-    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues or r7_issues or r8_issues or st_issues)
+    print("\n--- 第九轮防回退自检 ---")
+    r9_checks, r9_issues = check_round9()
+    for c in r9_checks:
+        print("  " + c)
+    for i in r9_issues:
+        print("  [X] " + i)
+
+    ok = not (missing or unlisted or errors or cs5 or acad or fd or mu or undef or pkg_issues or beh_issues or w7_issues or inst_issues or r5_issues or r6_issues or r7_issues or r8_issues or r9_issues or st_issues)
     print("\n结论：%s" % ("PASS（静态层面）" if ok else "存在待确认项"))
     print("真编译验证：tools/install.ps1 -CompileOnly     API 核对：tools/verify_acad_api.ps1")
     print("纯逻辑实测：tools/selftest/run.ps1（JSON 往返 / 命名模板 / PDF 合并 / 预检辅助）")

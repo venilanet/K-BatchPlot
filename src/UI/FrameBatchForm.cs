@@ -44,7 +44,7 @@ namespace MPlot
         public List<SheetItem> Items { get { return _items;}}
 
         // 列索引
-        private const int C_NO = 0, C_REMARK = 1, C_DN = 2, C_TITLE = 3, C_REV = 4,
+        private const int C_NO = 0, C_PREVIEW = 1, C_DN = 2, C_TITLE = 3, C_REV = 4,
         C_PAPER = 5, C_DEN = 6, C_FILE = 7, C_STATUS = 8, C_ORIENT = 9, C_DEL = 10;
 
         public FrameBatchForm(List<SheetItem> items, FrameLibrary lib)
@@ -57,7 +57,7 @@ namespace MPlot
             ClientSize = new Size(1120, 700);
             MinimumSize = new Size(900, 560);
 
-            _hint = Ui.L("双击单元格可直接修改图号/图名/版次/纸张/比例/文件名；重复图号、重复文件名、空文件名会标红。\r\n「定位选中图纸」直接回图上看选中图框（可平移/缩放，按回车返回清单）；「点选图框」可在图上连续点选图框块追加进清单（回车结束，Esc 取消）；点「确认导出 PDF」前会自动检查文件名、图框、纸张与输出目录。", 900);
+            _hint = Ui.L("纸张列点下拉可单张改（A0/A1/A2/A3/A4/自定义）；比例列显示导出时真正用的比例（自动=实测÷纸张，改纸张即变；双击可填分母，清空=自动；1:200 以上标橙色，打印后文字可能偏小）；点每行的「预览」可看这张的打印效果；重复图号、重复文件名、空文件名会标红。\r\n「定位选中图纸」直接回图上看选中图框（可平移/缩放，按回车返回清单）；「点选图框」可在图上连续点选图框块追加进清单（回车结束，Esc 取消）；点「确认导出 PDF」前会自动检查文件名、图框、纸张与输出目录。", 900);
 
             _filter = Ui.D(new[] { "全部图纸", "重复图号", "重复文件名", "文件名为空", "异常图纸"}, 130, 0);
             _filter.SelectedIndexChanged += delegate { ApplyFilter();};
@@ -73,6 +73,15 @@ namespace MPlot
             AddColumns();
             _grid.CellEndEdit += delegate(object s, DataGridViewCellEventArgs e) { SyncRow(e.RowIndex);};
             _grid.CellClick += delegate(object s, DataGridViewCellEventArgs e) { OnCellClick(e);};
+            // 纸张下拉框选完立即提交（否则要等单元格失焦才触发 CellValueChanged）
+            _grid.CurrentCellDirtyStateChanged += delegate(object s, EventArgs e)
+            {
+                if (_grid.CurrentCell != null && _grid.CurrentCell.ColumnIndex == C_PAPER && _grid.IsCurrentCellDirty)
+                    try { _grid.CommitEdit(DataGridViewDataErrorContexts.Commit); } catch { }
+            };
+            _grid.CellValueChanged += delegate(object s, DataGridViewCellEventArgs e) { OnCellValueChanged(e);};
+            // 纸张下拉框：格值不在下拉列表里时不弹报错框（没有纸张的行格值是空的）
+            _grid.DataError += delegate(object s, DataGridViewDataErrorEventArgs e) { e.ThrowException = false; };
             _grid.RowPostPaint += delegate(object s, DataGridViewRowPostPaintEventArgs e) { PaintRowNo(e);};
 
             FlowLayoutPanel top = new FlowLayoutPanel
@@ -101,7 +110,7 @@ namespace MPlot
             Ui.B("下移", delegate { MoveRow(1);}, 70),
             Ui.B("纸张统计", delegate { ShowStat();}, 96),
             Ui.B("导出目录CSV", delegate { ExportCsv();}, 120),
-            Ui.L("提示：选中多行后点可批量改；没选中时改全部可见行；纸张列双击可单张改（可填 A1 / 自定义 880×640mm）", 300)));
+            Ui.L("提示：选中多行后点可批量改；没选中时改全部可见行；纸张列点下拉可单张改；选中多行点上移/下移可整批移动。", 300)));
 
             _confirmBtn = Ui.B("确认导出 PDF (" + _items.Count + " 张)", delegate { Confirm();}, 190);
             FlowLayoutPanel bottom = new FlowLayoutPanel
@@ -124,17 +133,29 @@ namespace MPlot
             _grid.Columns.Add("cNo", "序号");
             _grid.Columns["cNo"].Width = 46;
             _grid.Columns["cNo"].ReadOnly = true;
-            _grid.Columns.Add("cRemark", "备注");
-            _grid.Columns["cRemark"].Width = 90;
+            // 行内预览按钮：每行一个「预览」，点一下按当前这行的纸张/比例渲染打印效果看
+            // （备注列已删：来源信息用不上，纸张/比例/预览才是核对要用的）
+            DataGridViewButtonColumn prev = new DataGridViewButtonColumn
+            {
+                Name = "cPreview", HeaderText = "预览", Text = "预览",
+                UseColumnTextForButtonValue = true, Width = 54
+            };
+            _grid.Columns.Add(prev);
             _grid.Columns.Add("cDn", "图号 (A)");
             _grid.Columns["cDn"].Width = 150;
             _grid.Columns.Add("cTitle", "图名 (C)");
             _grid.Columns["cTitle"].Width = 220;
             _grid.Columns.Add("cRev", "版次 (B)");
             _grid.Columns["cRev"].Width = 70;
-            _grid.Columns.Add("cPaper", "纸张");
-            _grid.Columns["cPaper"].Width = 110;
-            _grid.Columns.Add("cDen", "比例分母");
+            // 纸张列改下拉框：每行点一下就能改纸张（A0/A1/A2/A3/A4/加长/自定义），不用再双击打字
+            DataGridViewComboBoxColumn paperCol = new DataGridViewComboBoxColumn
+            {
+                Name = "cPaper", HeaderText = "纸张", Width = 110,
+                FlatStyle = FlatStyle.Flat, DisplayStyle = DataGridViewComboBoxDisplayStyle.DropDownButton
+            };
+            foreach (string n in PaperPresets.Names) paperCol.Items.Add(n);
+            _grid.Columns.Add(paperCol);
+            _grid.Columns.Add("cDen", "比例");
             _grid.Columns["cDen"].Width = 80;
             _grid.Columns.Add("cFile", "文件名");
             _grid.Columns["cFile"].Width = 300;
@@ -185,10 +206,72 @@ namespace MPlot
             return w >= h? "横向": "纵向";
         }
 
-        private static double DenOf(SheetItem s)
+        /// <summary>纸张下拉框的格值：只给预设名（必须在下拉列表里）；没有纸张时给 null（空串会触发下拉框报错）。</summary>
+        private static string PaperPresetName(SheetItem s)
         {
-            if (s.Config!= null && s.Config.ScaleDenominator > 0) return s.Config.ScaleDenominator;
+            if (s.Config == null || s.Config.Paper == null) return null;
+            return s.Config.Paper.Preset;
+        }
+
+        /// <summary>标称有效比例分母（不含留白）：手动分母优先，其次全局自定义，再按实测÷纸张算；
+        /// ScaleToFit/OneToOne 不用数字比例，返回 0。</summary>
+        private double EffectiveDen(SheetItem s)
+        {
+            if (s.Config != null && s.Config.ScaleDenominator > 0)
+                return s.Config.ScaleDenominator;
+            if (_cfg == null) return 0;
+            if (_cfg.ScaleMode == ScaleMode.Custom)
+                return _cfg.CustomScaleDenominator > 0 ? _cfg.CustomScaleDenominator : 0;
+            if (_cfg.ScaleMode == ScaleMode.AutoFromFrame)
+            {
+                if (s.Config == null || s.Config.Paper == null) return 0;
+                try { return PaperMatcher.ComputeScaleDenominator(s.WidthMm, s.HeightMm, s.Config, s.Rotated); }
+                catch { return 0; }
+            }
             return 0;
+        }
+
+        /// <summary>比例列显示：导出时真正用的标称比例。自动=实测尺寸÷纸张（改纸张即变）；
+        /// 手动填过分母的加 *（不随纸张变）；ScaleToFit 显示「适应」，1:1 显示「1:1」。
+        /// 注意：显示的是标称比例（不含 2mm 留白），导出时实际比例会再大一点点（1:100→约1:100.5），
+        /// 差不到 1%，不影响看字大小的判断；预览图是带留白的真实导出效果。</summary>
+        private string ScaleText(SheetItem s)
+        {
+            if (s.Config != null && s.Config.ScaleDenominator > 0)
+                return "1:" + s.Config.ScaleDenominator.ToString("0.####", CultureInfo.InvariantCulture) + "*";
+            double den = EffectiveDen(s);
+            if (den <= 0)
+            {
+                ScaleMode mode = _cfg == null ? ScaleMode.AutoFromFrame : _cfg.ScaleMode;
+                if (mode == ScaleMode.ScaleToFit) return "适应";
+                if (mode == ScaleMode.OneToOne) return "1:1";
+                return "";
+            }
+            return "1:" + den.ToString("0.####", CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>比例格悬停说明：自动还是手动，超 1:200 提醒字可能偏小。</summary>
+        private string ScaleTip(SheetItem s)
+        {
+            if (s.Config != null && s.Config.ScaleDenominator > 0)
+                return "手动比例 1:" + s.Config.ScaleDenominator.ToString("0.####", CultureInfo.InvariantCulture) + "，不随纸张变化（双击清空=自动）";
+            double den = EffectiveDen(s);
+            if (den <= 0) return "";
+            string tip = "自动比例 1:" + den.ToString("0.####", CultureInfo.InvariantCulture) + "（实测÷纸张，改纸张即变）";
+            if (den >= 200) tip += "；超过 1:200，打印后文字可能偏小，请核对";
+            return tip;
+        }
+
+        /// <summary>解析比例格的输入：接受「1:100」「1:100*」「100」，清空=自动。</summary>
+        private static bool ParseDenCell(string text, out double den)
+        {
+            den = 0;
+            if (string.IsNullOrWhiteSpace(text)) return false;
+            string t = text.Trim();
+            if (t.StartsWith("1:", StringComparison.OrdinalIgnoreCase)) t = t.Substring(2);
+            if (t.EndsWith("*")) t = t.Substring(0, t.Length - 1);
+            t = t.Trim();
+            return double.TryParse(t, NumberStyles.Float, CultureInfo.InvariantCulture, out den) && den > 0;
         }
 
         private static double PaperArea(SheetItem s)
@@ -205,17 +288,23 @@ namespace MPlot
                 SheetItem s = _items[i];
                 int ri = _grid.Rows.Add(
                 (i + 1).ToString(),
-                s.MetaSource?? "",
+                "预览",
                 s.DrawNo?? "",
                 s.Title?? "",
                 s.Rev?? "",
-                PaperDisplay(s),
-                DenOf(s) > 0? DenOf(s).ToString("0.####", CultureInfo.InvariantCulture): "",
+                PaperPresetName(s),
+                ScaleText(s),
                 string.IsNullOrEmpty(s.FileStem)? "": Naming.FullFileName(s),
                 SheetStatusNames.Text(s.Status),
                 OrientText(s),
                 "删");
-                DataGridViewCell sc = _grid.Rows[ri].Cells[C_STATUS];
+                DataGridViewRow row = _grid.Rows[ri];
+                // 纸张格悬停显示完整尺寸（下拉只显示预设名，自定义的尺寸放提示里）
+                row.Cells[C_PAPER].ToolTipText = PaperDisplay(s);
+                // 比例格悬停说明自动/手动；1:200 以上标橙色，提醒打印后文字可能偏小
+                row.Cells[C_DEN].ToolTipText = ScaleTip(s);
+                if (EffectiveDen(s) >= 200) row.Cells[C_DEN].Style.ForeColor = Color.DarkOrange;
+                DataGridViewCell sc = row.Cells[C_STATUS];
                 if (s.Status == SheetStatus.Success) sc.Style.ForeColor = Color.Green;
                 else if (s.Status == SheetStatus.Failed) sc.Style.ForeColor = Color.Red;
                 else if (s.Status == SheetStatus.Skipped) sc.Style.ForeColor = Color.Gray;
@@ -312,20 +401,43 @@ namespace MPlot
             if (fileRaw.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
                 fileRaw = fileRaw.Substring(0, fileRaw.Length - 4);
             s.FileStem = fileRaw;
-            // 纸张列显示实际尺寸，存回时按「A1」「自定义 880×640mm」等形式解析；解析失败保留原纸张
+            // 纸张列是下拉框，只给预设名；同一预设不动（自定义的实测尺寸得以保留），
+            // 下拉选「自定义」（不带尺寸）时用本行实测尺寸，不重置成 841×594
             string pn = Cell(gr, C_PAPER);
             if (!string.IsNullOrEmpty(pn))
             {
-                PaperSpec ps;
-                if (PaperPresets.TryParseDisplay(pn, out ps))
+                string name = pn.Split(new char[] { ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries)[0];
+                PaperSpec cur = s.Config == null ? null : s.Config.Paper;
+                if (cur != null && string.Equals(cur.Preset, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    // 同一预设，不动
+                }
+                else if (string.Equals(name, "自定义", StringComparison.OrdinalIgnoreCase)
+                    && pn.Trim() == "自定义")
                 {
                     if (s.Config == null) s.Config = new FrameEntry();
-                    s.Config.Paper = ps;
+                    s.Config.Paper = new PaperSpec
+                    {
+                        Preset = "自定义",
+                        WidthMm = s.WidthMm,
+                        HeightMm = s.HeightMm,
+                        IsCustom = true
+                    };
+                }
+                else
+                {
+                    PaperSpec ps;
+                    if (PaperPresets.TryParseDisplay(pn, out ps))
+                    {
+                        if (s.Config == null) s.Config = new FrameEntry();
+                        s.Config.Paper = ps;
+                    }
                 }
             }
+            // 比例格接受「1:100」「1:100*」「100」，清空=自动
             string denRaw = Cell(gr, C_DEN);
             double den;
-            if (double.TryParse(denRaw, NumberStyles.Float, CultureInfo.InvariantCulture, out den) && den > 0)
+            if (ParseDenCell(denRaw, out den))
             {
                 if (s.Config == null) s.Config = new FrameEntry();
                 s.Config.ScaleNumerator = 1;
@@ -350,6 +462,12 @@ namespace MPlot
         private void OnCellClick(DataGridViewCellEventArgs e)
         {
             if (e.RowIndex < 0 || e.RowIndex >= _items.Count) return;
+            // 行内预览按钮：点一下按当前这行的纸张/比例渲染打印效果看
+            if (e.ColumnIndex == C_PREVIEW)
+            {
+                PreviewRow(e.RowIndex);
+                return;
+            }
             // 行内删除按钮：单击即删该行（无需先选中）
             if (e.ColumnIndex == C_DEL)
             {
@@ -357,8 +475,24 @@ namespace MPlot
                 RefreshGrid();
                 return;
             }
-            // 点「纸张」列给出下拉提示（双击编辑单元格里填名字即可，这里仅提示可用纸张）
-            if (e.ColumnIndex!= C_PAPER) return;
+        }
+
+        /// <summary>纸张下拉框改了值：写回该行并重算文件名，比例列跟着纸张变；刷新推迟到当前
+        /// 单元格事件结束后再做，避免在提交中途清行。</summary>
+        private void OnCellValueChanged(DataGridViewCellEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.RowIndex >= _items.Count) return;
+            if (e.ColumnIndex != C_PAPER) return;
+            SyncRow(e.RowIndex);
+            SheetItem s = _items[e.RowIndex];
+            s.FileStem = Naming.BuildFileName(s, _cfg, e.RowIndex + 1);
+            int row = e.RowIndex;
+            BeginInvoke(new Action(delegate
+            {
+                if (IsDisposed || !IsHandleCreated) return;
+                RefreshGrid();
+                if (row >= 0 && row < _grid.Rows.Count) _grid.Rows[row].Selected = true;
+            }));
         }
 
         private void PaintRowNo(DataGridViewRowPostPaintEventArgs e)
@@ -460,21 +594,47 @@ namespace MPlot
             RefreshGrid();
         }
 
-        /// <summary>上移/下移：在可见行之间移动（筛选后跳过被隐藏的行），移动后保持选中。</summary>
+        /// <summary>上移/下移：选中的多行一起移动一格。做法：按显示顺序扫一遍，选中的行只有当
+        /// 相邻（上/下）一行没被选中时才跟它交换——这样连续选中的一块整体平移、相对顺序不变；
+        /// 已到顶/到底的行不动，其余选中的行照常移动。移动后恢复全部选中。</summary>
         private void MoveRow(int delta)
         {
-            List<int> idx = SelectedIndices();
-            if (idx.Count == 0) { Ui.Warn("请先选中一行"); return;}
-            int i = idx[0];
+            List<SheetItem> sel = SelectedItems();
+            if (sel.Count == 0) { Ui.Warn("请先选中要移动的行"); return;}
+            HashSet<SheetItem> selSet = new HashSet<SheetItem>(sel);
             List<int> visible = VisibleIndices();
-            int pos = visible.IndexOf(i);
-            if (pos < 0) return;
-            int npos = pos + delta;
-            if (npos < 0 || npos >= visible.Count) return;
-            int j = visible[npos];
-            SheetItem tmp = _items[i]; _items[i] = _items[j]; _items[j] = tmp;
+            if (delta < 0)
+            {
+                // 上移：从上往下扫；选中的行只有当上面一行没被选中时才上移一格
+                for (int p = 1; p < visible.Count; p++)
+                {
+                    int cur = visible[p], above = visible[p - 1];
+                    if (selSet.Contains(_items[cur]) && !selSet.Contains(_items[above]))
+                    {
+                        SheetItem tmp = _items[cur]; _items[cur] = _items[above]; _items[above] = tmp;
+                        visible[p] = above; visible[p - 1] = cur;
+                    }
+                }
+            }
+            else
+            {
+                // 下移：从下往上扫；选中的行只有当下面一行没被选中时才下移一格
+                for (int p = visible.Count - 2; p >= 0; p--)
+                {
+                    int cur = visible[p], below = visible[p + 1];
+                    if (selSet.Contains(_items[cur]) && !selSet.Contains(_items[below]))
+                    {
+                        SheetItem tmp = _items[cur]; _items[cur] = _items[below]; _items[below] = tmp;
+                        visible[p] = below; visible[p + 1] = cur;
+                    }
+                }
+            }
             RefreshGrid();
-            if (j >= 0 && j < _grid.Rows.Count) _grid.Rows[j].Selected = true;
+            foreach (SheetItem s in sel)
+            {
+                int i = _items.IndexOf(s);
+                if (i >= 0 && i < _grid.Rows.Count) _grid.Rows[i].Selected = true;
+            }
         }
 
         /// <summary>排序：默认顺序 = 扫描顺序（Seq）；图号/图名用自然排序；纸张按面积再按名称。排序后恢复选中。</summary>
@@ -526,6 +686,36 @@ namespace MPlot
             {
                 _items[i].DrawNo = prefix + n.ToString("00");
                 n++;
+            }
+            RefreshGrid();
+        }
+
+        /// <summary>预览单张：点某行的「预览」，按当前这行的纸张/比例设置，用与导出完全相同的
+        /// 请求渲染一张打印预览图，大图里看（可缩放），方便逐张核对打印效果——字会不会太小、
+        /// 内容有没有被裁、边框有没有缺。渲染失败直接报原因，不静默。</summary>
+        private void PreviewRow(int row)
+        {
+            if (row < 0 || row >= _items.Count) return;
+            // 先把正在编辑的单元格提交回 _items，否则预览用的是旧纸张/旧比例
+            try { _grid.EndEdit(); } catch { }
+            for (int i = 0; i < _items.Count; i++) SyncRow(i);
+            SheetItem s = _items[row];
+            string err = "";
+            string png = "";
+            try
+            {
+                Cursor = Cursors.WaitCursor;
+                PlotRequest req = BatchEngine.BuildSinglePreviewRequest(s, _cfg);
+                if (req == null) err = "打印请求为空";
+                else png = Plotter.RenderPreview(req, out err);
+            }
+            catch (Exception ex) { err = ex.Message; Logger.Verbose("单张预览失败：" + ex.Message); }
+            finally { Cursor = Cursors.Default; }
+            if (string.IsNullOrEmpty(png)) { Ui.Warn("预览生成失败：" + err); return; }
+            string caption = (s.DrawNo ?? "") + " " + (s.Title ?? "") + " · " + PaperDisplay(s) + " · " + ScaleText(s);
+            using (SingleSheetPreviewForm f = new SingleSheetPreviewForm(png, caption))
+            {
+                f.ShowDialog(this);
             }
             RefreshGrid();
         }
@@ -651,14 +841,14 @@ namespace MPlot
             {
                 StringBuilder sb = new StringBuilder();
                 sb.Append("\uFEFF"); // UTF-8 BOM，Excel 中文不乱码
-                sb.Append("序号,图号,图名,版次,图框大小,比例分母,文件名,来源\r\n");
+                sb.Append("序号,图号,图名,版次,图框大小,比例,文件名,来源\r\n");
                 for (int i = 0; i < _items.Count; i++)
                 {
                     SheetItem s = _items[i];
                     sb.Append(Csv((i + 1).ToString(CultureInfo.InvariantCulture))).Append(',').Append(Csv(s.DrawNo)).Append(',')
                     .Append(Csv(s.Title)).Append(',').Append(Csv(s.Rev)).Append(',')
                     .Append(Csv(PaperDisplay(s))).Append(',')
-                    .Append(Csv(DenOf(s) > 0? DenOf(s).ToString("0.####", CultureInfo.InvariantCulture): ""))
+                    .Append(Csv(ScaleText(s)))
                     .Append(',').Append(Csv(string.IsNullOrEmpty(s.FileStem)? "": Naming.FullFileName(s))).Append(',')
                     .Append(Csv(s.MetaSource)).Append("\r\n");
                 }

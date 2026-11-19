@@ -412,6 +412,19 @@ namespace MPlot
         }
 
         /// <summary>
+        /// 给清单里的单张预览用：按当前这张的纸张/比例设置，用与导出完全相同的
+        /// 方式算打印请求（设备、纸张、比例、窗口都走 BuildRequest），保证预览所见 = 导出所得。
+        /// toFile=false：预览不落盘，不占输出目录、不触文件名去重。
+        /// </summary>
+        internal static PlotRequest BuildSinglePreviewRequest(SheetItem s, GlobalConfig cfg)
+        {
+            if (s == null) return null;
+            if (cfg == null) cfg = GlobalConfig.Current;
+            string device = AcadUtil.ResolvePdfDevice(cfg.PlotDevice);
+            return BuildRequest(s, 0, cfg, device, false, false, "", null, 0);
+        }
+
+        /// <summary>
         /// 由一张图纸 + 全局配置，算出真正下发 Plotter 的打印请求。
         /// 预览与实打共用本方法，保证「预览所见 = 实际所得」。
         /// </summary>
